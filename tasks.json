@@ -1,0 +1,1358 @@
+{
+  "version": 1,
+  "project": "alt-image-update-operator",
+  "generated_at": "2026-05-01T17:07:39Z",
+  "status_values": [
+    "queued",
+    "in_progress",
+    "done",
+    "blocked",
+    "failed",
+    "skipped"
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Bootstrap Kubebuilder project baseline",
+      "status": "queued",
+      "priority": 100,
+      "dependencies": [],
+      "area": "scaffold",
+      "estimated_session": "medium",
+      "description": "Create or complete the Kubebuilder/controller-runtime project skeleton for the operator without implementing product logic yet.",
+      "files": [
+        "go.mod",
+        "go.sum",
+        "PROJECT",
+        "Makefile",
+        "cmd/main.go",
+        "config/default/",
+        "config/manager/",
+        "config/rbac/"
+      ],
+      "acceptance_criteria": [
+        "Repository has a standard Kubebuilder layout with manager entrypoint, Makefile targets, and config kustomizations.",
+        "Go module name matches the repository and controller-runtime dependencies are present.",
+        "The manager can compile without requiring any fake runtime success path."
+      ],
+      "validation": [
+        "go test ./...",
+        "make manifests"
+      ],
+      "implementation_notes": "Use Kubebuilder conventions and preserve any existing repository files. If kubebuilder is unavailable, document the exact blocker in progress.txt and manually create only the minimal equivalent scaffold.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T002",
+      "title": "Scaffold AltImageUpdatePolicy API and controller",
+      "status": "queued",
+      "priority": 99,
+      "dependencies": [
+        "T001"
+      ],
+      "area": "api",
+      "estimated_session": "medium",
+      "description": "Add the namespaced security.altlinux.org/v1alpha1 AltImageUpdatePolicy API kind and a controller skeleton wired into the manager.",
+      "files": [
+        "api/v1alpha1/altimageupdatepolicy_types.go",
+        "api/v1alpha1/groupversion_info.go",
+        "api/v1alpha1/zz_generated.deepcopy.go",
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "config/crd/",
+        "config/samples/security_v1alpha1_altimageupdatepolicy.yaml"
+      ],
+      "acceptance_criteria": [
+        "API group is security.altlinux.org, version is v1alpha1, kind is AltImageUpdatePolicy, and scope is Namespaced.",
+        "Controller is registered with the manager and reconciles AltImageUpdatePolicy resources.",
+        "Generated CRD and sample paths follow Kubebuilder conventions."
+      ],
+      "validation": [
+        "make generate",
+        "make manifests",
+        "go test ./..."
+      ],
+      "implementation_notes": "Prefer Kubebuilder create api if available. Keep reconcile behavior minimal in this task; product state machine belongs to later controller tasks.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T003",
+      "title": "Define CRD spec status and validation markers",
+      "status": "queued",
+      "priority": 98,
+      "dependencies": [
+        "T002"
+      ],
+      "area": "api",
+      "estimated_session": "large",
+      "description": "Implement the full AltImageUpdatePolicy API surface required by the PRD, including target Deployment reference, container name, check mode, trigger token, build context, Kaniko settings, registry secret, ALT base image, and status fields.",
+      "files": [
+        "api/v1alpha1/altimageupdatepolicy_types.go",
+        "config/crd/bases/security.altlinux.org_altimageupdatepolicies.yaml",
+        "config/samples/security_v1alpha1_altimageupdatepolicy.yaml"
+      ],
+      "acceptance_criteria": [
+        "Spec includes targetRef, containerName, check, trigger, build.context ConfigMap settings, build.outputImage, build.builderImage, registrySecretRef, and alt.baseImage.",
+        "Status includes phase, conditions, observedGeneration, lastCheckTime, lastBuildJobName, lastBuiltImage, lastAppliedImage, lastRolloutTime, reason, and message.",
+        "OpenAPI validation rejects unsupported check modes, missing required fields, invalid target kind, and malformed empty image fields where required.",
+        "Printer columns expose phase, target, built image, applied image, and age."
+      ],
+      "validation": [
+        "make generate",
+        "make manifests",
+        "go test ./..."
+      ],
+      "implementation_notes": "Use Kubebuilder validation markers and explicit enum constants. Do not add webhook-only validation in MVP unless required by controller-runtime scaffolding.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T004",
+      "title": "Add initial samples and demo policy manifests",
+      "status": "queued",
+      "priority": 97,
+      "dependencies": [
+        "T003"
+      ],
+      "area": "docs",
+      "estimated_session": "small",
+      "description": "Create valid sample and demo AltImageUpdatePolicy YAMLs for Always and AltAptSimulation modes using the finalized API fields.",
+      "files": [
+        "config/samples/security_v1alpha1_altimageupdatepolicy.yaml",
+        "config/demo/policy-always.yaml",
+        "config/demo/policy-alt-apt-simulation.yaml"
+      ],
+      "acceptance_criteria": [
+        "Sample policy is minimal but valid against the generated CRD.",
+        "Demo Always policy targets deployment demo-app and container app.",
+        "Demo AltAptSimulation policy uses ALT apt simulation settings and the same build context model."
+      ],
+      "validation": [
+        "make manifests",
+        "kubectl apply --dry-run=client -f config/samples/security_v1alpha1_altimageupdatepolicy.yaml",
+        "kubectl apply --dry-run=client -f config/demo/policy-always.yaml",
+        "kubectl apply --dry-run=client -f config/demo/policy-alt-apt-simulation.yaml"
+      ],
+      "implementation_notes": "These manifests are examples only. They must not claim success or create fake status fields.",
+      "risk": "low",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T005",
+      "title": "Implement status phases and condition helpers",
+      "status": "queued",
+      "priority": 96,
+      "dependencies": [
+        "T003"
+      ],
+      "area": "status",
+      "estimated_session": "medium",
+      "description": "Add pure helper logic for phase constants and Kubernetes condition updates used by the controller.",
+      "files": [
+        "internal/status/phase.go",
+        "internal/status/conditions.go",
+        "internal/status/conditions_test.go"
+      ],
+      "acceptance_criteria": [
+        "Helpers set Ready, Checking, Building, Applying, Rollout, UpToDate, and Failed style conditions consistently.",
+        "Condition transitions update reason, message, status, and lastTransitionTime correctly.",
+        "Unit tests cover condition creation, transition, no-op update, and failure condition behavior."
+      ],
+      "validation": [
+        "gofmt -w internal/status/phase.go internal/status/conditions.go internal/status/conditions_test.go",
+        "go test ./internal/status",
+        "go test ./..."
+      ],
+      "implementation_notes": "Keep this package independent from controller-runtime clients so it remains easy to unit test.",
+      "risk": "low",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T006",
+      "title": "Implement deterministic run key and build id helpers",
+      "status": "queued",
+      "priority": 95,
+      "dependencies": [
+        "T003"
+      ],
+      "area": "controller",
+      "estimated_session": "medium",
+      "description": "Create pure helpers that compute the reconcile run key and build id from policy generation, manual trigger token, target, context, and output image inputs.",
+      "files": [
+        "internal/run/build_id.go",
+        "internal/run/build_id_test.go"
+      ],
+      "acceptance_criteria": [
+        "Same policy inputs produce the same run key and build id across reconciles.",
+        "Changing spec.trigger.manualToken changes the run key and generated image tag inputs.",
+        "Changing unrelated status fields does not change the run key.",
+        "Unit tests cover generation-only and manualToken retrigger cases."
+      ],
+      "validation": [
+        "gofmt -w internal/run/build_id.go internal/run/build_id_test.go",
+        "go test ./internal/run",
+        "go test ./..."
+      ],
+      "implementation_notes": "This helper is central to idempotency. Avoid wall-clock time as an input except where a tag explicitly needs a recorded build start timestamp chosen once by the controller.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T007",
+      "title": "Implement image reference and tag helpers",
+      "status": "queued",
+      "priority": 94,
+      "dependencies": [
+        "T003",
+        "T006"
+      ],
+      "area": "jobs",
+      "estimated_session": "medium",
+      "description": "Add pure helper logic for constructing the pushed image reference from spec.build.outputImage and the deterministic build id.",
+      "files": [
+        "internal/image/reference.go",
+        "internal/image/tag.go",
+        "internal/image/tag_test.go"
+      ],
+      "acceptance_criteria": [
+        "Output image with an explicit tag can be converted into a build-specific tag without losing registry or repository path.",
+        "Output image without an explicit tag gets a deterministic build tag.",
+        "Invalid or empty image references return clear errors.",
+        "Unit tests cover registry ports, nested repositories, existing tags, and invalid references."
+      ],
+      "validation": [
+        "gofmt -w internal/image/reference.go internal/image/tag.go internal/image/tag_test.go",
+        "go test ./internal/image",
+        "go test ./..."
+      ],
+      "implementation_notes": "Prefer a proven container image reference parser from an existing dependency if available; do not parse complex image references with fragile string splits.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T008",
+      "title": "Implement ALT apt simulation log parser",
+      "status": "queued",
+      "priority": 93,
+      "dependencies": [
+        "T003"
+      ],
+      "area": "jobs",
+      "estimated_session": "medium",
+      "description": "Implement pure parser logic that classifies Check Job logs as updates available, no updates, or parse/check failure according to PRD patterns.",
+      "files": [
+        "internal/check/parser.go",
+        "internal/check/parser_test.go"
+      ],
+      "acceptance_criteria": [
+        "Parser detects updates from Inst lines and apt sections for upgraded, newly installed, or removed packages.",
+        "Parser returns NoUpdates for successful logs without upgrade/install/remove markers.",
+        "Parser distinguishes failed job execution from successful logs with no updates.",
+        "Unit tests cover ALT apt variants, empty logs, noisy logs, and mixed stdout/stderr content."
+      ],
+      "validation": [
+        "gofmt -w internal/check/parser.go internal/check/parser_test.go",
+        "go test ./internal/check",
+        "go test ./..."
+      ],
+      "implementation_notes": "Keep the MVP parser simple and conservative. Do not claim security-only detection; PRD says MVP only detects available package changes.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T009",
+      "title": "Implement Job names labels and annotations helpers",
+      "status": "queued",
+      "priority": 92,
+      "dependencies": [
+        "T006"
+      ],
+      "area": "jobs",
+      "estimated_session": "small",
+      "description": "Create deterministic helpers for Check Job and Build Job names, labels, and annotations used for lookup and idempotency.",
+      "files": [
+        "internal/jobs/names.go",
+        "internal/jobs/names_test.go"
+      ],
+      "acceptance_criteria": [
+        "Job names are deterministic, DNS-1123 compatible, and short enough for Kubernetes Job limits.",
+        "Labels include policy name, policy namespace, run key or build id, and security.altlinux.org/job-type.",
+        "Helpers allow the controller to find existing Jobs for a run without creating duplicates.",
+        "Unit tests cover long policy names and collision-resistant truncation behavior."
+      ],
+      "validation": [
+        "gofmt -w internal/jobs/names.go internal/jobs/names_test.go",
+        "go test ./internal/jobs",
+        "go test ./..."
+      ],
+      "implementation_notes": "Use stable hashing for long names. Labels must not contain registry credentials or secret values.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T010",
+      "title": "Implement Kaniko Build Job factory",
+      "status": "queued",
+      "priority": 91,
+      "dependencies": [
+        "T003",
+        "T007",
+        "T009"
+      ],
+      "area": "jobs",
+      "estimated_session": "large",
+      "description": "Create the Kubernetes Job object that performs a real Kaniko build from ConfigMap context and pushes the generated image to the configured registry.",
+      "files": [
+        "internal/jobs/build_job.go",
+        "internal/jobs/build_job_test.go"
+      ],
+      "acceptance_criteria": [
+        "Build Job has ownerReference to the AltImageUpdatePolicy when created by the controller.",
+        "Build Job mounts the configured ConfigMap at /workspace and uses the configured dockerfile key.",
+        "Kaniko args include --context=dir:///workspace, --dockerfile=/workspace/<key>, and --destination=<built image>.",
+        "registrySecretRef is mounted only when specified and no secret data is logged or copied into status.",
+        "The Job performs a real build and push; no echo-only or fake success path is present."
+      ],
+      "validation": [
+        "gofmt -w internal/jobs/build_job.go internal/jobs/build_job_test.go",
+        "go test ./internal/jobs",
+        "go test ./..."
+      ],
+      "implementation_notes": "Default builder image should match the PRD or API default. Keep privileged mode and Docker socket mounts out of the Job.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T011",
+      "title": "Implement AltAptSimulation Check Job factory",
+      "status": "queued",
+      "priority": 90,
+      "dependencies": [
+        "T003",
+        "T009"
+      ],
+      "area": "jobs",
+      "estimated_session": "medium",
+      "description": "Create the Kubernetes Job object that runs a real ALT Linux apt update and dist-upgrade simulation.",
+      "files": [
+        "internal/jobs/check_job.go",
+        "internal/jobs/check_job_test.go"
+      ],
+      "acceptance_criteria": [
+        "Check Job uses the configured ALT base image.",
+        "Check Job command executes apt-get update and apt-get -s dist-upgrade.",
+        "Check Job has ownerReference and labels compatible with deterministic lookup.",
+        "Unit tests verify command, image, labels, restart policy, and security context expectations."
+      ],
+      "validation": [
+        "gofmt -w internal/jobs/check_job.go internal/jobs/check_job_test.go",
+        "go test ./internal/jobs",
+        "go test ./..."
+      ],
+      "implementation_notes": "The check must be a real Kubernetes Job. Do not replace it with local process execution inside the controller.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T012",
+      "title": "Implement idempotent Deployment image patch helper",
+      "status": "queued",
+      "priority": 89,
+      "dependencies": [
+        "T003",
+        "T006",
+        "T007"
+      ],
+      "area": "deployment",
+      "estimated_session": "medium",
+      "description": "Add pure helper logic that updates only the named container image and applies build annotations to the Deployment pod template.",
+      "files": [
+        "internal/deploy/patch.go",
+        "internal/deploy/patch_test.go"
+      ],
+      "acceptance_criteria": [
+        "Helper changes only spec.template.spec.containers[] entry matching spec.containerName.",
+        "Helper returns TargetContainerNotFound when the named container does not exist.",
+        "Helper adds required security.altlinux.org build and policy annotations to the pod template.",
+        "Helper reports no-op when the desired image and annotations are already applied."
+      ],
+      "validation": [
+        "gofmt -w internal/deploy/patch.go internal/deploy/patch_test.go",
+        "go test ./internal/deploy",
+        "go test ./..."
+      ],
+      "implementation_notes": "Do not mutate unrelated initContainers or sidecars. Preserve existing pod template annotations.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T013",
+      "title": "Implement Deployment rollout observation helper",
+      "status": "queued",
+      "priority": 88,
+      "dependencies": [
+        "T012"
+      ],
+      "area": "deployment",
+      "estimated_session": "medium",
+      "description": "Add helper logic that determines whether a Deployment rollout is progressing, succeeded, or failed after the image patch.",
+      "files": [
+        "internal/deploy/rollout.go",
+        "internal/deploy/rollout_test.go"
+      ],
+      "acceptance_criteria": [
+        "Helper returns succeeded only when observedGeneration is current and available/updated replicas match desired replicas.",
+        "Helper detects rollout timeout or ProgressDeadlineExceeded condition as failure.",
+        "Helper returns progressing while Kubernetes has not converged yet.",
+        "Unit tests cover zero replicas, partial rollout, complete rollout, and failed rollout conditions."
+      ],
+      "validation": [
+        "gofmt -w internal/deploy/rollout.go internal/deploy/rollout_test.go",
+        "go test ./internal/deploy",
+        "go test ./..."
+      ],
+      "implementation_notes": "Mirror Kubernetes Deployment semantics closely enough for MVP. Avoid sleeping inside the helper; the controller should requeue.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T014",
+      "title": "Generate complete controller RBAC",
+      "status": "queued",
+      "priority": 87,
+      "dependencies": [
+        "T002",
+        "T010",
+        "T011",
+        "T012"
+      ],
+      "area": "rbac",
+      "estimated_session": "medium",
+      "description": "Add controller RBAC markers and manifests for CRD access, Jobs, Pods/log, Deployments, Events, ConfigMaps, and registry Secrets read.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "config/rbac/role.yaml",
+        "config/rbac/altimageupdatepolicy_editor_role.yaml",
+        "config/rbac/altimageupdatepolicy_viewer_role.yaml"
+      ],
+      "acceptance_criteria": [
+        "Manager role can get/list/watch/update/status AltImageUpdatePolicy resources.",
+        "Manager role can create/get/list/watch Jobs and get/list/watch Pods plus get pods/log.",
+        "Manager role can get/list/watch/patch/update Deployments and create Events.",
+        "Manager role can read ConfigMaps and read Secrets without granting cluster-admin."
+      ],
+      "validation": [
+        "make manifests",
+        "go test ./...",
+        "kubectl apply --dry-run=client -k config/default"
+      ],
+      "implementation_notes": "Use least privilege that still supports the PRD. Do not add broad wildcard resources unless a narrow rule is not feasible.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T015",
+      "title": "Implement reconcile preflight and failure statuses",
+      "status": "queued",
+      "priority": 86,
+      "dependencies": [
+        "T005",
+        "T006",
+        "T012",
+        "T014"
+      ],
+      "area": "controller",
+      "estimated_session": "large",
+      "description": "Implement the first real reconcile phase: load policy, compute run identity, validate target Deployment, validate ConfigMap build context, and write failure status when prerequisites are missing.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "Controller updates status.observedGeneration for processed resources.",
+        "Missing target Deployment sets phase Failed with reason TargetDeploymentNotFound.",
+        "Missing target container sets phase Failed with reason TargetContainerNotFound.",
+        "Missing ConfigMap sets phase Failed with reason BuildContextNotFound.",
+        "Missing Dockerfile key sets phase Failed with reason DockerfileKeyNotFound."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Keep reconcile idempotent. Use status subresource updates and avoid updating spec-owned fields.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T016",
+      "title": "Implement Always mode Build Job creation",
+      "status": "queued",
+      "priority": 85,
+      "dependencies": [
+        "T010",
+        "T015"
+      ],
+      "area": "controller",
+      "estimated_session": "large",
+      "description": "Extend reconcile so check.mode Always creates or finds the deterministic Build Job for the current run.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "New Always policy creates exactly one Build Job for the current run.",
+        "Repeated reconcile before Job completion finds the existing Job and does not create duplicates.",
+        "Status phase becomes Building and lastBuildJobName is set.",
+        "Build Job ownerReference and labels are set by the controller."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Use deterministic names and labels from internal/jobs. Treat AlreadyExists as a normal idempotent outcome.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T017",
+      "title": "Observe Build Job terminal states",
+      "status": "queued",
+      "priority": 84,
+      "dependencies": [
+        "T016"
+      ],
+      "area": "controller",
+      "estimated_session": "medium",
+      "description": "Teach reconcile to observe Build Job running, succeeded, and failed states and reflect them in policy status.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "Running Build Job keeps phase Building and requeues.",
+        "Failed Build Job sets phase Failed with reason BuildJobFailed and useful message.",
+        "Completed Build Job records lastBuiltImage and proceeds toward Deployment update.",
+        "Controller restart can recover state by reading the existing Job."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Use Kubernetes Job conditions rather than pod log text for build success. Do not inspect or expose registry credentials.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T018",
+      "title": "Patch target Deployment after successful build",
+      "status": "queued",
+      "priority": 83,
+      "dependencies": [
+        "T012",
+        "T017"
+      ],
+      "area": "deployment",
+      "estimated_session": "medium",
+      "description": "After a Build Job succeeds, update the configured Deployment container image and pod template annotations using the Deployment patch helper.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/deploy/patch.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "Controller patches only the configured Deployment and container.",
+        "No patch is sent when the Deployment already has the desired image and annotations.",
+        "Status lastAppliedImage is set after the desired image is applied.",
+        "Deployment template includes last-build-id, last-built-image, last-applied-at, policy-name, and policy-namespace annotations."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/deploy/patch.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller ./internal/deploy",
+        "go test ./..."
+      ],
+      "implementation_notes": "Use Kubernetes patch/update carefully to avoid overwriting user changes made between reads.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T019",
+      "title": "Complete rollout observation and success status",
+      "status": "queued",
+      "priority": 82,
+      "dependencies": [
+        "T013",
+        "T018"
+      ],
+      "area": "status",
+      "estimated_session": "medium",
+      "description": "Finish the Always mode happy path by waiting for Deployment rollout convergence and setting final successful status.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/deploy/rollout.go",
+        "internal/status/conditions.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "Progressing rollout keeps phase Applying or RollingOut and requeues.",
+        "Successful rollout sets phase Succeeded, Ready=True, and lastRolloutTime.",
+        "Failed rollout sets phase Failed with reason RolloutFailed.",
+        "Status lastBuiltImage and lastAppliedImage match the Deployment image on success."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/deploy/rollout.go internal/status/conditions.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller ./internal/deploy ./internal/status",
+        "go test ./..."
+      ],
+      "implementation_notes": "Do not block reconcile with long sleeps. Requeue while rollout is progressing.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T020",
+      "title": "Implement manual retrigger and terminal idempotency",
+      "status": "queued",
+      "priority": 81,
+      "dependencies": [
+        "T019"
+      ],
+      "area": "controller",
+      "estimated_session": "medium",
+      "description": "Ensure terminal states do not rerun the pipeline unless spec.generation or spec.trigger.manualToken changes.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/run/build_id.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go",
+        "internal/run/build_id_test.go"
+      ],
+      "acceptance_criteria": [
+        "Repeated reconcile after Succeeded does not create another Build Job.",
+        "Repeated reconcile after Succeeded does not patch Deployment again.",
+        "Changing spec.trigger.manualToken creates a new run, new Build Job, and new generated image tag.",
+        "Status clearly records the latest run while preserving Kubernetes condition semantics."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/run/build_id.go internal/controller/altimageupdatepolicy_controller_test.go internal/run/build_id_test.go",
+        "go test ./internal/controller ./internal/run",
+        "go test ./..."
+      ],
+      "implementation_notes": "This task should close PRD UC-004 and UC-005 for Always mode.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T021",
+      "title": "Create and observe AltAptSimulation Check Job",
+      "status": "queued",
+      "priority": 80,
+      "dependencies": [
+        "T008",
+        "T011",
+        "T015"
+      ],
+      "area": "controller",
+      "estimated_session": "large",
+      "description": "Extend reconcile so check.mode AltAptSimulation creates or finds the deterministic Check Job and waits for its terminal state.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "AltAptSimulation policy creates exactly one Check Job for the current run.",
+        "Repeated reconcile finds the existing Check Job and does not create duplicates.",
+        "Running Check Job sets phase Checking and requeues.",
+        "Failed Check Job sets phase Failed with reason CheckJobFailed."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "The Check Job is a real Kubernetes Job. Do not run apt commands inside the controller process.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T022",
+      "title": "Read Check Job pod logs safely",
+      "status": "queued",
+      "priority": 79,
+      "dependencies": [
+        "T014",
+        "T021"
+      ],
+      "area": "controller",
+      "estimated_session": "medium",
+      "description": "Add controller logic to locate Check Job pods, read logs through the Kubernetes API, and return clear errors when logs are unavailable.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "Controller reads logs from the pod owned by the completed Check Job.",
+        "Missing pod or log read failure sets phase Failed with reason CheckLogsUnavailable.",
+        "Log handling does not write secret data to status or structured logs.",
+        "RBAC includes pods/log permission required by this code path."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "make manifests",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Unit tests can isolate pod selection logic; envtest may need a fake log reader seam because envtest API server does not provide real kubelet logs.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T023",
+      "title": "Branch AltAptSimulation result to UpToDate or build",
+      "status": "queued",
+      "priority": 78,
+      "dependencies": [
+        "T008",
+        "T017",
+        "T019",
+        "T022"
+      ],
+      "area": "controller",
+      "estimated_session": "large",
+      "description": "Parse completed Check Job logs and either mark the policy UpToDate or continue into the existing Build Job, Deployment update, and rollout pipeline.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/check/parser.go",
+        "internal/status/conditions.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "UpdatesAvailable result creates or finds the Build Job and proceeds through the same build/apply/rollout logic as Always mode.",
+        "NoUpdates result sets phase UpToDate, Ready=True, lastCheckTime, reason NoUpdates, and does not create a Build Job.",
+        "Parser uncertainty or failed log classification sets phase Failed with a clear reason.",
+        "Repeated reconcile after UpToDate is idempotent until generation or manualToken changes."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/check/parser.go internal/status/conditions.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller ./internal/check ./internal/status",
+        "go test ./..."
+      ],
+      "implementation_notes": "Reuse existing build and deployment code paths. Avoid copying separate pipeline logic for AltAptSimulation.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T024",
+      "title": "Emit Kubernetes Events for pipeline milestones",
+      "status": "queued",
+      "priority": 77,
+      "dependencies": [
+        "T019",
+        "T023"
+      ],
+      "area": "status",
+      "estimated_session": "medium",
+      "description": "Record Kubernetes Events for important lifecycle milestones and failures so kubectl describe shows useful audit evidence.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "internal/controller/altimageupdatepolicy_controller_test.go"
+      ],
+      "acceptance_criteria": [
+        "Events include CheckStarted, CheckCompleted, BuildStarted, BuildCompleted, DeploymentUpdated, RolloutCompleted, and failure events.",
+        "Events are emitted once per meaningful transition, not on every reconcile loop.",
+        "Event messages include policy, job, and image identifiers but never registry credentials or Secret data.",
+        "kubectl describe aiup can show the emitted events in e2e."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Use controller-runtime event recorder. Use deterministic transition checks to avoid event spam.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T025",
+      "title": "Add controller metrics",
+      "status": "queued",
+      "priority": 76,
+      "dependencies": [
+        "T019",
+        "T023"
+      ],
+      "area": "controller",
+      "estimated_session": "medium",
+      "description": "Expose custom Prometheus metrics for build and rollout outcomes through the Kubebuilder manager metrics endpoint.",
+      "files": [
+        "internal/metrics/metrics.go",
+        "internal/controller/altimageupdatepolicy_controller.go",
+        "cmd/main.go",
+        "internal/metrics/metrics_test.go"
+      ],
+      "acceptance_criteria": [
+        "Metrics include alt_image_update_build_total with result labels.",
+        "Metrics include alt_image_update_rollout_total with result labels.",
+        "Metrics are registered once and do not panic in tests.",
+        "Metrics endpoint remains compatible with Kubebuilder generated manager configuration."
+      ],
+      "validation": [
+        "gofmt -w internal/metrics/metrics.go internal/controller/altimageupdatepolicy_controller.go cmd/main.go internal/metrics/metrics_test.go",
+        "go test ./internal/metrics ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Keep label cardinality low. Do not use image references or policy names as Prometheus labels.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T026",
+      "title": "Set up envtest controller test harness",
+      "status": "queued",
+      "priority": 75,
+      "dependencies": [
+        "T003",
+        "T015"
+      ],
+      "area": "tests",
+      "estimated_session": "large",
+      "description": "Create an envtest suite for controller tests using the generated CRD and real Kubernetes API server behavior.",
+      "files": [
+        "internal/controller/suite_test.go",
+        "internal/controller/altimageupdatepolicy_controller_envtest_test.go",
+        "test/utils/"
+      ],
+      "acceptance_criteria": [
+        "Envtest starts an API server and installs the generated AltImageUpdatePolicy CRD.",
+        "Controller tests can create Policies, Deployments, ConfigMaps, and Jobs.",
+        "Status subresource behavior is covered by the test setup.",
+        "The suite skips with a clear message only when envtest binaries are missing."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/suite_test.go internal/controller/altimageupdatepolicy_controller_envtest_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Envtest may simulate Job status by updating Kubernetes Job status objects; that is acceptable for controller tests. Do not use fake clients for paths that rely on API server status behavior.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T027",
+      "title": "Add envtest coverage for validation and failure statuses",
+      "status": "queued",
+      "priority": 74,
+      "dependencies": [
+        "T026"
+      ],
+      "area": "tests",
+      "estimated_session": "medium",
+      "description": "Cover API validation and reconcile preflight failure paths with envtest.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller_envtest_test.go",
+        "api/v1alpha1/altimageupdatepolicy_types.go"
+      ],
+      "acceptance_criteria": [
+        "Invalid check mode is rejected by the API server.",
+        "Missing required spec fields are rejected by the API server.",
+        "Missing Deployment produces Failed status with TargetDeploymentNotFound.",
+        "Missing ConfigMap and missing Dockerfile key produce the expected Failed reasons."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller_envtest_test.go api/v1alpha1/altimageupdatepolicy_types.go",
+        "make manifests",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Prefer envtest for CRD validation. Keep pure validation helper tests separate only where API server validation is not enough.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T028",
+      "title": "Add envtest coverage for Always pipeline idempotency",
+      "status": "queued",
+      "priority": 73,
+      "dependencies": [
+        "T020",
+        "T026"
+      ],
+      "area": "tests",
+      "estimated_session": "large",
+      "description": "Test the Always mode controller path from policy creation through Build Job creation, simulated Job completion, Deployment patch, rollout status, and idempotent repeated reconcile.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller_envtest_test.go"
+      ],
+      "acceptance_criteria": [
+        "Creating an Always policy creates one Build Job.",
+        "Updating Job status to Complete causes the Deployment image to be patched.",
+        "Updating Deployment status to rolled out causes policy phase Succeeded.",
+        "Repeated reconcile does not create another Build Job or patch the Deployment again.",
+        "Changing manualToken starts a new run and creates a new Build Job."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller_envtest_test.go",
+        "go test ./internal/controller",
+        "go test ./..."
+      ],
+      "implementation_notes": "Do not fake a successful e2e build here. Envtest is only for controller behavior; real Kaniko execution belongs to e2e.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T029",
+      "title": "Add envtest coverage for AltAptSimulation paths",
+      "status": "queued",
+      "priority": 72,
+      "dependencies": [
+        "T023",
+        "T026"
+      ],
+      "area": "tests",
+      "estimated_session": "large",
+      "description": "Test AltAptSimulation controller behavior for Check Job creation, no-updates result, updates-available result, and log-read failure.",
+      "files": [
+        "internal/controller/altimageupdatepolicy_controller_envtest_test.go",
+        "internal/check/parser_test.go"
+      ],
+      "acceptance_criteria": [
+        "AltAptSimulation policy creates one Check Job and does not duplicate it.",
+        "NoUpdates logs lead to phase UpToDate and no Build Job.",
+        "UpdatesAvailable logs lead to Build Job creation and reuse the existing build pipeline.",
+        "Unavailable logs lead to Failed status with CheckLogsUnavailable."
+      ],
+      "validation": [
+        "gofmt -w internal/controller/altimageupdatepolicy_controller_envtest_test.go internal/check/parser_test.go",
+        "go test ./internal/controller ./internal/check",
+        "go test ./..."
+      ],
+      "implementation_notes": "Inject a narrow log reader abstraction only for tests if envtest cannot serve pod logs. Runtime code must still use the Kubernetes logs API.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T030",
+      "title": "Create real demo Deployment and ConfigMap build context",
+      "status": "queued",
+      "priority": 71,
+      "dependencies": [
+        "T003",
+        "T004"
+      ],
+      "area": "e2e",
+      "estimated_session": "medium",
+      "description": "Add demo Kubernetes manifests for namespace, Deployment, service if needed, and ConfigMap build context with a real ALT Linux Dockerfile.",
+      "files": [
+        "config/demo/namespace.yaml",
+        "config/demo/deployment.yaml",
+        "config/demo/context-configmap.yaml",
+        "test/e2e/manifests/deployment.yaml",
+        "test/e2e/manifests/context-configmap.yaml",
+        "test/e2e/manifests/policy-always.yaml"
+      ],
+      "acceptance_criteria": [
+        "Demo Deployment has container name app and an initial image distinct from the expected rebuilt image.",
+        "ConfigMap contains Dockerfile key used by the policy.",
+        "Dockerfile uses configurable ALT Linux base image and executes apt-get update, apt-get -y dist-upgrade, and apt-get clean.",
+        "Demo manifests do not pre-populate policy status or fake build results."
+      ],
+      "validation": [
+        "kubectl apply --dry-run=client -f config/demo/namespace.yaml",
+        "kubectl apply --dry-run=client -f config/demo/deployment.yaml",
+        "kubectl apply --dry-run=client -f config/demo/context-configmap.yaml",
+        "kubectl apply --dry-run=client -f test/e2e/manifests/policy-always.yaml"
+      ],
+      "implementation_notes": "Keep ConfigMap context small enough for Kubernetes limits. Make image names easy to override for local registry setups.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T031",
+      "title": "Add kind local registry setup script",
+      "status": "queued",
+      "priority": 70,
+      "dependencies": [
+        "T001"
+      ],
+      "area": "e2e",
+      "estimated_session": "large",
+      "description": "Create a script that prepares or reuses a kind cluster with a local registry reachable by Kaniko and by node container runtime.",
+      "files": [
+        "hack/kind-with-registry.sh",
+        "test/e2e/kind_registry.sh"
+      ],
+      "acceptance_criteria": [
+        "Script creates or reuses a named kind cluster.",
+        "Script creates or reuses local registry on localhost:5001 or a documented override.",
+        "Kind nodes can pull images pushed to the local registry.",
+        "Script is idempotent enough for repeated local e2e runs."
+      ],
+      "validation": [
+        "bash -n hack/kind-with-registry.sh",
+        "bash -n test/e2e/kind_registry.sh",
+        "hack/kind-with-registry.sh"
+      ],
+      "implementation_notes": "Do not hide setup failures. If Docker, kind, or network access is unavailable, record the exact blocker in progress.txt.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T032",
+      "title": "Implement e2e script for Always full pipeline",
+      "status": "queued",
+      "priority": 69,
+      "dependencies": [
+        "T019",
+        "T024",
+        "T030",
+        "T031"
+      ],
+      "area": "e2e",
+      "estimated_session": "large",
+      "description": "Add a real e2e script that installs CRDs/controller, applies demo manifests, waits for Kaniko Build Job completion, verifies registry push, verifies Deployment update, verifies rollout, and verifies CR status.",
+      "files": [
+        "hack/e2e.sh",
+        "Makefile",
+        "test/e2e/e2e_test.go"
+      ],
+      "acceptance_criteria": [
+        "Script installs generated CRDs and runs the real controller manager or deployed controller.",
+        "Script applies demo Deployment, ConfigMap context, and Always policy.",
+        "Script waits for a real Build Job and fails if it does not complete.",
+        "Script verifies registry tags endpoint contains the pushed image.",
+        "Script verifies Deployment container app image equals status.lastAppliedImage.",
+        "Script verifies rollout status succeeds and policy status.phase is Succeeded."
+      ],
+      "validation": [
+        "bash -n hack/e2e.sh",
+        "go test ./...",
+        "hack/e2e.sh"
+      ],
+      "implementation_notes": "No fake status patching and no echo-only build. The e2e must prove CRD + controller + Kubernetes Job + real Kaniko build + push + Deployment update.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T033",
+      "title": "Extend e2e coverage for AltAptSimulation",
+      "status": "queued",
+      "priority": 68,
+      "dependencies": [
+        "T023",
+        "T032"
+      ],
+      "area": "e2e",
+      "estimated_session": "large",
+      "description": "Extend real e2e validation to create an AltAptSimulation policy, observe the Check Job, inspect its logs, and verify either UpToDate or build continuation behavior.",
+      "files": [
+        "hack/e2e.sh",
+        "config/demo/policy-alt-apt-simulation.yaml",
+        "test/e2e/manifests/policy-alt-apt-simulation.yaml"
+      ],
+      "acceptance_criteria": [
+        "E2E creates a Check Job labeled security.altlinux.org/job-type=check.",
+        "Check Job logs show apt-get update and apt-get -s dist-upgrade.",
+        "If updates are detected, e2e observes Build Job and Deployment update.",
+        "If no updates are detected, e2e verifies policy phase UpToDate and no Build Job for that run.",
+        "E2E output prints enough resource names to support thesis demo troubleshooting."
+      ],
+      "validation": [
+        "bash -n hack/e2e.sh",
+        "go test ./...",
+        "hack/e2e.sh"
+      ],
+      "implementation_notes": "The e2e may accept either UpdatesAvailable or NoUpdates depending on the current ALT base image state, but it must verify the controller's branch is consistent with Check Job logs.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T034",
+      "title": "Document architecture and API usage",
+      "status": "queued",
+      "priority": 67,
+      "dependencies": [
+        "T003",
+        "T023"
+      ],
+      "area": "docs",
+      "estimated_session": "medium",
+      "description": "Write architecture and API documentation that explains the CRD fields, reconcile state machine, Job model, Deployment update, status fields, and MVP limitations.",
+      "files": [
+        "README.md",
+        "docs/architecture.md"
+      ],
+      "acceptance_criteria": [
+        "README explains product purpose, prerequisites, install basics, and a minimal policy example.",
+        "docs/architecture.md describes CRD to Check Job to Build Job to registry push to Deployment patch to rollout to status.",
+        "Documentation states that MVP does not implement security-only CVE filtering, Git context, rollback, or non-Deployment workloads.",
+        "Docs warn that runtime code and e2e do not fake successful builds."
+      ],
+      "validation": [
+        "go test ./...",
+        "make manifests"
+      ],
+      "implementation_notes": "Keep docs aligned with actual field names and command names in the repository. Do not document future features as implemented.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T035",
+      "title": "Document demo and troubleshooting workflow",
+      "status": "queued",
+      "priority": 66,
+      "dependencies": [
+        "T032",
+        "T033"
+      ],
+      "area": "docs",
+      "estimated_session": "medium",
+      "description": "Write thesis-demo oriented documentation with exact commands for e2e, manual demo, and common failure diagnosis.",
+      "files": [
+        "docs/demo.md",
+        "docs/troubleshooting.md",
+        "README.md"
+      ],
+      "acceptance_criteria": [
+        "docs/demo.md shows clean-cluster demo steps for CRD, controller pod, policy, Build Job, Kaniko logs, registry tags, Deployment image, rollout, and CR status.",
+        "docs/troubleshooting.md covers registry unavailable, Kaniko push failed, Deployment pull failed, Check Job failed, ConfigMap missing, Dockerfile key missing, and rollout timeout.",
+        "Commands use actual namespaces and manifest paths from config/demo and hack/e2e.sh.",
+        "Docs include expected outputs for key kubectl jsonpath checks."
+      ],
+      "validation": [
+        "go test ./...",
+        "hack/e2e.sh"
+      ],
+      "implementation_notes": "If e2e cannot run in the current environment, document the exact missing tool or cluster issue in progress.txt and still validate markdown commands by inspection.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T036",
+      "title": "Add CI workflow for generation tests and manifests",
+      "status": "queued",
+      "priority": 65,
+      "dependencies": [
+        "T027",
+        "T028",
+        "T029"
+      ],
+      "area": "ci",
+      "estimated_session": "medium",
+      "description": "Add CI automation for Go tests, generated code consistency, manifests consistency, and shell syntax checks for e2e scripts.",
+      "files": [
+        ".github/workflows/ci.yaml",
+        "Makefile",
+        "hack/verify-codegen.sh"
+      ],
+      "acceptance_criteria": [
+        "CI runs go test ./... on supported Go version.",
+        "CI runs make generate and make manifests and fails on uncommitted generated diffs.",
+        "CI runs shell syntax checks for hack/e2e.sh and kind registry scripts.",
+        "CI does not require a privileged real cluster for normal pull request checks."
+      ],
+      "validation": [
+        "gofmt -w $(git ls-files '*.go')",
+        "make generate",
+        "make manifests",
+        "go test ./...",
+        "bash -n hack/e2e.sh",
+        "bash -n hack/kind-with-registry.sh"
+      ],
+      "implementation_notes": "Real kind e2e can be a separate manual or scheduled job if CI runners cannot support Docker-in-Docker reliably.",
+      "risk": "medium",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    },
+    {
+      "id": "T037",
+      "title": "Run final MVP acceptance audit",
+      "status": "queued",
+      "priority": 64,
+      "dependencies": [
+        "T032",
+        "T033",
+        "T034",
+        "T035",
+        "T036"
+      ],
+      "area": "e2e",
+      "estimated_session": "large",
+      "description": "Perform the final product-level verification against PRD AC-001 through AC-025 and record exact results and blockers.",
+      "files": [
+        "progress.txt",
+        "README.md",
+        "docs/demo.md",
+        "docs/troubleshooting.md",
+        "hack/e2e.sh"
+      ],
+      "acceptance_criteria": [
+        "CRD installs and kubectl api-resources shows AltImageUpdatePolicy.",
+        "Controller pod runs in the documented namespace.",
+        "Always mode proves Build Job, Kaniko build logs, registry push, Deployment update, rollout success, and Succeeded status.",
+        "AltAptSimulation mode proves Check Job logs and correct UpToDate or build branch.",
+        "All automated validations that can run in the environment pass; unavailable tools are documented with exact reasons."
+      ],
+      "validation": [
+        "make generate",
+        "make manifests",
+        "go test ./...",
+        "kubectl apply -k config/default",
+        "hack/e2e.sh",
+        "kubectl get crd altimageupdatepolicies.security.altlinux.org",
+        "kubectl get aiup demo-app-policy -n alt-update-demo -o jsonpath='{.status.phase}'",
+        "kubectl rollout status deployment/demo-app -n alt-update-demo"
+      ],
+      "implementation_notes": "Do not mark the MVP complete if real build, push, Deployment update, or rollout verification fails.",
+      "risk": "high",
+      "attempts": 0,
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "result_summary": null
+    }
+  ]
+}
