@@ -46,3 +46,16 @@
 [2026-05-01T12:10:00Z] VALIDATION T001: <commands and results>
 [2026-05-01T12:11:00Z] DONE T001: <final summary>
 ```
+
+# Git commit rule
+
+If the task is completed successfully and all validation commands pass:
+
+1. Review changed files with git status and git diff.
+2. Commit only relevant files.
+3. Use commit message format:
+
+TASK_ID: concise task summary
+
+Do not commit if validation failed.
+Do not commit unrelated changes.

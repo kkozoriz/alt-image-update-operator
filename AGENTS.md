@@ -106,3 +106,11 @@ Document:
 - Do not replace image building with a script that just writes a successful status.
 - Do not hard-code one namespace unless the PRD/task explicitly restricts it.
 - Do not mark tasks done when validation failed.
+
+## Git workflow
+
+- After each completed task, create a git commit.
+- Commit only files related to the completed task.
+- Do not commit broken code.
+- Do not commit if validation commands failed.
+- Use commit message format: TASK_ID: short summary.
