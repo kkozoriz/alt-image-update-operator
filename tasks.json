@@ -783,7 +783,7 @@
     {
       "id": "T022",
       "title": "Read Check Job pod logs safely",
-      "status": "queued",
+      "status": "done",
       "priority": 79,
       "dependencies": [
         "T014",
@@ -810,11 +810,12 @@
       ],
       "implementation_notes": "Unit tests can isolate pod selection logic; envtest may need a fake log reader seam because envtest API server does not provide real kubelet logs.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:17:17Z",
+      "completed_at": "2026-05-02T13:21:37Z",
+      "result_summary": "Controller now locates the pod owned by a completed AltAptSimulation Check Job, reads the check container logs through the Kubernetes pods/log API via a production client-go log reader, and fails the policy with reason CheckLogsUnavailable when no owned pod exists or log streaming fails. Added controller tests for owned pod selection, missing pod, log read failure, and ensuring raw log content is not written to status.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make manifests; same environment go test ./internal/controller; same environment go test ./..."
     },
     {
       "id": "T023",

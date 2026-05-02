@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"io"
+	"sort"
 	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
@@ -35,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -49,6 +52,7 @@ const (
 	reasonBuildImageInvalid        = "BuildImageInvalid"
 	reasonCheckJobRunning          = "CheckJobRunning"
 	reasonCheckJobCompleted        = "CheckJobCompleted"
+	reasonCheckLogsUnavailable     = "CheckLogsUnavailable"
 	reasonCheckJobFailed           = "CheckJobFailed"
 	reasonBuildJobEnsured          = "BuildJobEnsured"
 	reasonBuildJobRunning          = "BuildJobRunning"
@@ -67,7 +71,34 @@ const (
 // AltImageUpdatePolicyReconciler reconciles an AltImageUpdatePolicy object.
 type AltImageUpdatePolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	CheckLogReader CheckJobLogReader
+}
+
+// CheckJobLogReader reads container logs for a completed Check Job pod.
+type CheckJobLogReader interface {
+	ReadLogs(ctx context.Context, namespace, podName, containerName string) (string, error)
+}
+
+type kubernetesCheckJobLogReader struct {
+	clientset kubernetes.Interface
+}
+
+func (r *kubernetesCheckJobLogReader) ReadLogs(ctx context.Context, namespace, podName, containerName string) (string, error) {
+	req := r.clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: containerName,
+	})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	logBytes, err := io.ReadAll(stream)
+	if err != nil {
+		return "", err
+	}
+	return string(logBytes), nil
 }
 
 // +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies,verbs=get;list;watch;update
@@ -158,7 +189,23 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 		policy.Status.LastCheckJobName = checkJob.Name
 
 		if complete := findJobCondition(checkJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
-			message := fmt.Sprintf("Check Job %q completed", checkJob.Name)
+			_, podName, err := r.readCheckJobLogs(ctx, checkJob)
+			if err != nil {
+				message := fmt.Sprintf("Check Job %q completed, but check logs are unavailable: %v", checkJob.Name, err)
+				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonCheckLogsUnavailable, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reasonCheckLogsUnavailable, message, now)
+				if policy.Status.LastCheckTime == nil || originalStatus.LastCheckJobName != checkJob.Name {
+					policy.Status.LastCheckTime = &now
+				}
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check Job logs unavailable", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name, "error", err.Error())
+				return ctrl.Result{}, nil
+			}
+
+			message := fmt.Sprintf("Check Job %q completed and logs were read from pod %q", checkJob.Name, podName)
 			operatorstatus.SetPhase(&policy.Status, policy.Generation, operatorstatus.PhasePending, reasonCheckJobCompleted, message)
 			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue, reasonCheckJobCompleted, message, now)
 			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionFailed, metav1.ConditionFalse, reasonCheckJobCompleted, message, now)
@@ -399,6 +446,75 @@ func (r *AltImageUpdatePolicyReconciler) ensureCheckJob(ctx context.Context, pol
 	return &existing, nil
 }
 
+func (r *AltImageUpdatePolicyReconciler) readCheckJobLogs(ctx context.Context, checkJob *batchv1.Job) (string, string, error) {
+	if r.CheckLogReader == nil {
+		return "", "", fmt.Errorf("check log reader is not configured")
+	}
+
+	pod, err := r.findCheckJobPod(ctx, checkJob)
+	if err != nil {
+		return "", "", err
+	}
+
+	logs, err := r.CheckLogReader.ReadLogs(ctx, pod.Namespace, pod.Name, jobs.CheckContainerName)
+	if err != nil {
+		return "", pod.Name, fmt.Errorf("read pod %q container %q logs: %w", pod.Name, jobs.CheckContainerName, err)
+	}
+	return logs, pod.Name, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) findCheckJobPod(ctx context.Context, checkJob *batchv1.Job) (*corev1.Pod, error) {
+	if checkJob == nil {
+		return nil, fmt.Errorf("check Job is nil")
+	}
+
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(checkJob.Namespace)); err != nil {
+		return nil, err
+	}
+
+	candidates := make([]corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		if isOwnedByJob(&podList.Items[i], checkJob) {
+			candidates = append(candidates, podList.Items[i])
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no pod owned by Check Job %q was found", checkJob.Name)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		iSucceeded := candidates[i].Status.Phase == corev1.PodSucceeded
+		jSucceeded := candidates[j].Status.Phase == corev1.PodSucceeded
+		if iSucceeded != jSucceeded {
+			return iSucceeded
+		}
+		if !candidates[i].CreationTimestamp.Equal(&candidates[j].CreationTimestamp) {
+			return candidates[j].CreationTimestamp.Before(&candidates[i].CreationTimestamp)
+		}
+		return candidates[i].Name < candidates[j].Name
+	})
+
+	return &candidates[0], nil
+}
+
+func isOwnedByJob(pod *corev1.Pod, job *batchv1.Job) bool {
+	if pod == nil || job == nil {
+		return false
+	}
+	for i := range pod.OwnerReferences {
+		owner := pod.OwnerReferences[i]
+		if owner.APIVersion != batchv1.SchemeGroupVersion.String() || owner.Kind != "Job" || owner.Name != job.Name {
+			continue
+		}
+		if job.UID != "" && owner.UID != job.UID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (r *AltImageUpdatePolicyReconciler) applyBuiltImageToDeployment(ctx context.Context, deployment *appsv1.Deployment, policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, now metav1.Time) (bool, *metav1.Time, error) {
 	appliedAt := deploymentAppliedAt(deployment, policy, builtImage, buildID, now)
 	patch := deploy.ImagePatch{
@@ -559,6 +675,14 @@ func (r *AltImageUpdatePolicyReconciler) updatePolicyStatus(ctx context.Context,
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AltImageUpdatePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.CheckLogReader == nil {
+		clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+		if err != nil {
+			return err
+		}
+		r.CheckLogReader = &kubernetesCheckJobLogReader{clientset: clientset}
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.AltImageUpdatePolicy{}).
 		Named("altimageupdatepolicy").

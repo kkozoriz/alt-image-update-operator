@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +208,184 @@ func TestReconcileFailedCheckJobSetsFailedStatus(t *testing.T) {
 	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
 	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionFalse {
 		t.Fatalf("CheckCompleted condition = %#v, want False", checkCompleted)
+	}
+}
+
+func TestReconcileCompletedCheckJobReadsOwnedPodLogs(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	checkJob := testCheckJobForPolicy(t, policy)
+	checkJob.UID = "check-job-uid"
+	checkJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	ownedPod := testCheckPodForJob(checkJob, "check-pod-owned", corev1.PodSucceeded)
+	ownedPod.CreationTimestamp = metav1.NewTime(time.Date(2026, 5, 2, 13, 18, 0, 0, time.UTC))
+	unrelatedPod := testDeploymentPod("check-pod-unrelated")
+	unrelatedPod.Labels = map[string]string{batchv1.JobNameLabel: checkJob.Name}
+	logReader := &fakeCheckJobLogReader{
+		logs: "Reading Package Lists...\nsuper-secret-token\n0 upgraded, 0 newly installed, 0 removed and 0 not upgraded.\n",
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		checkJob,
+		ownedPod,
+		unrelatedPod,
+	)
+	reconciler.CheckLogReader = logReader
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after completed check", result)
+	}
+	if logReader.calls != 1 {
+		t.Fatalf("log reader calls = %d, want 1", logReader.calls)
+	}
+	if logReader.lastNamespace != policy.Namespace {
+		t.Fatalf("log reader namespace = %q, want %q", logReader.lastNamespace, policy.Namespace)
+	}
+	if logReader.lastPodName != ownedPod.Name {
+		t.Fatalf("log reader pod = %q, want owned pod %q", logReader.lastPodName, ownedPod.Name)
+	}
+	if logReader.lastContainerName != jobs.CheckContainerName {
+		t.Fatalf("log reader container = %q, want %q", logReader.lastContainerName, jobs.CheckContainerName)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhasePending {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhasePending)
+	}
+	if updated.Status.Reason != reasonCheckJobCompleted {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonCheckJobCompleted)
+	}
+	if updated.Status.LastCheckJobName != checkJob.Name {
+		t.Fatalf("LastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, checkJob.Name)
+	}
+	if updated.Status.LastCheckTime == nil {
+		t.Fatalf("LastCheckTime is nil, want completed check timestamp")
+	}
+	if statusContains(updated.Status, "super-secret-token") {
+		t.Fatalf("status contains raw check logs: %#v", updated.Status)
+	}
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionTrue {
+		t.Fatalf("CheckCompleted condition = %#v, want True", checkCompleted)
+	}
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionFalse {
+		t.Fatalf("Failed condition = %#v, want False", failed)
+	}
+}
+
+func TestReconcileCompletedCheckJobWithoutOwnedPodSetsLogsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	checkJob := testCheckJobForPolicy(t, policy)
+	checkJob.UID = "check-job-uid"
+	checkJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	logReader := &fakeCheckJobLogReader{logs: "should not be read"}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		checkJob,
+		testDeploymentPod("unowned-pod"),
+	)
+	reconciler.CheckLogReader = logReader
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after terminal log failure", result)
+	}
+	if logReader.calls != 0 {
+		t.Fatalf("log reader calls = %d, want 0 when owned pod is missing", logReader.calls)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != reasonCheckLogsUnavailable {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonCheckLogsUnavailable)
+	}
+	if !strings.Contains(updated.Status.Message, "no pod owned by Check Job") {
+		t.Fatalf("Message = %q, want missing owned pod explanation", updated.Status.Message)
+	}
+	if updated.Status.LastCheckTime == nil {
+		t.Fatalf("LastCheckTime is nil, want terminal check timestamp")
+	}
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionFalse {
+		t.Fatalf("CheckCompleted condition = %#v, want False", checkCompleted)
+	}
+}
+
+func TestReconcileCompletedCheckJobLogReadFailureSetsLogsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	checkJob := testCheckJobForPolicy(t, policy)
+	checkJob.UID = "check-job-uid"
+	checkJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	ownedPod := testCheckPodForJob(checkJob, "check-pod-owned", corev1.PodSucceeded)
+	logReader := &fakeCheckJobLogReader{err: errors.New("kubelet log stream unavailable")}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		checkJob,
+		ownedPod,
+	)
+	reconciler.CheckLogReader = logReader
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after terminal log failure", result)
+	}
+	if logReader.calls != 1 {
+		t.Fatalf("log reader calls = %d, want 1", logReader.calls)
+	}
+	if logReader.lastPodName != ownedPod.Name {
+		t.Fatalf("log reader pod = %q, want %q", logReader.lastPodName, ownedPod.Name)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != reasonCheckLogsUnavailable {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonCheckLogsUnavailable)
+	}
+	if !strings.Contains(updated.Status.Message, "kubelet log stream unavailable") {
+		t.Fatalf("Message = %q, want log read error", updated.Status.Message)
+	}
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionFalse {
+		t.Fatalf("CheckCompleted condition = %#v, want False", checkCompleted)
+	}
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionTrue {
+		t.Fatalf("Failed condition = %#v, want True", failed)
 	}
 }
 
@@ -902,8 +1082,29 @@ func newTestReconciler(t *testing.T, objects ...client.Object) *AltImageUpdatePo
 			WithObjects(objects...).
 			WithStatusSubresource(&securityv1alpha1.AltImageUpdatePolicy{}).
 			Build(),
-		Scheme: scheme,
+		Scheme:         scheme,
+		CheckLogReader: &fakeCheckJobLogReader{},
 	}
+}
+
+type fakeCheckJobLogReader struct {
+	logs              string
+	err               error
+	calls             int
+	lastNamespace     string
+	lastPodName       string
+	lastContainerName string
+}
+
+func (r *fakeCheckJobLogReader) ReadLogs(_ context.Context, namespace, podName, containerName string) (string, error) {
+	r.calls++
+	r.lastNamespace = namespace
+	r.lastPodName = podName
+	r.lastContainerName = containerName
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.logs, nil
 }
 
 type patchCountingClient struct {
@@ -1021,6 +1222,41 @@ func testCheckJobForPolicy(t *testing.T, policy *securityv1alpha1.AltImageUpdate
 		t.Fatalf("NewCheckJob returned error: %v", err)
 	}
 	return checkJob
+}
+
+func testCheckPodForJob(job *batchv1.Job, name string, phase corev1.PodPhase) *corev1.Pod {
+	controller := true
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: job.Namespace,
+			Labels: map[string]string{
+				batchv1.JobNameLabel:       job.Name,
+				batchv1.ControllerUidLabel: string(job.UID),
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: batchv1.SchemeGroupVersion.String(),
+					Kind:       "Job",
+					Name:       job.Name,
+					UID:        job.UID,
+					Controller: &controller,
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: phase,
+		},
+	}
+}
+
+func testDeploymentPod(name string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testNamespace,
+		},
+	}
 }
 
 func markPolicySucceededForCurrentRun(t *testing.T, policy *securityv1alpha1.AltImageUpdatePolicy, targetDeploymentGeneration int64) string {
@@ -1152,6 +1388,18 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func statusContains(status securityv1alpha1.AltImageUpdatePolicyStatus, value string) bool {
+	if strings.Contains(status.Reason, value) || strings.Contains(status.Message, value) {
+		return true
+	}
+	for i := range status.Conditions {
+		if strings.Contains(status.Conditions[i].Reason, value) || strings.Contains(status.Conditions[i].Message, value) {
 			return true
 		}
 	}
