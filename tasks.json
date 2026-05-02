@@ -449,7 +449,7 @@
     {
       "id": "T013",
       "title": "Implement Deployment rollout observation helper",
-      "status": "queued",
+      "status": "done",
       "priority": 88,
       "dependencies": [
         "T012"
@@ -474,11 +474,12 @@
       ],
       "implementation_notes": "Mirror Kubernetes Deployment semantics closely enough for MVP. Avoid sleeping inside the helper; the controller should requeue.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:40:40Z",
+      "completed_at": "2026-05-02T12:43:49Z",
+      "result_summary": "Added pure Deployment rollout observation helper and unit tests. The helper classifies progressing, succeeded, and failed rollout states using observedGeneration, desired/updated/available replicas, ProgressDeadlineExceeded, ReplicaFailure, and controller timeout inputs.",
+      "validation_result": "Passed: gofmt -w internal/deploy/rollout.go internal/deploy/rollout_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/deploy; same environment go test ./..."
     },
     {
       "id": "T014",
