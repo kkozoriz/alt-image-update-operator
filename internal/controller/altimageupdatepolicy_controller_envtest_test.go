@@ -7,6 +7,7 @@ import (
 	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	operatordeploy "alt-image-update-operator/internal/deploy"
 	operatorimage "alt-image-update-operator/internal/image"
 	"alt-image-update-operator/internal/jobs"
 	"alt-image-update-operator/internal/run"
@@ -93,6 +94,8 @@ func TestEnvtestReconcilerCreatesBuildJobAndObservesJobStatus(t *testing.T) {
 	ctx := context.Background()
 	c := envtestClientForTest(t)
 	reconciler := newEnvtestReconciler(t)
+	patchClient := &patchCountingClient{Client: c}
+	reconciler.Client = patchClient
 
 	namespace := createEnvtestNamespace(t, ctx, c)
 	policy := envtestPolicy(namespace)
@@ -135,6 +138,7 @@ func TestEnvtestReconcilerCreatesBuildJobAndObservesJobStatus(t *testing.T) {
 	if buildJob.Labels[jobs.LabelJobType] != string(jobs.JobTypeBuild) {
 		t.Fatalf("job type label = %q, want %q", buildJob.Labels[jobs.LabelJobType], jobs.JobTypeBuild)
 	}
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 1)
 
 	buildJob.Status.Conditions = []batchv1.JobCondition{{
 		Type:   batchv1.JobComplete,
@@ -162,6 +166,12 @@ func TestEnvtestReconcilerCreatesBuildJobAndObservesJobStatus(t *testing.T) {
 	if updatedDeployment.Spec.Template.Spec.Containers[0].Image != builtImage {
 		t.Fatalf("deployment image = %q, want %q", updatedDeployment.Spec.Template.Spec.Containers[0].Image, builtImage)
 	}
+	if updatedDeployment.Spec.Template.Annotations[operatordeploy.AnnotationLastBuildID] != buildID {
+		t.Fatalf("deployment buildID annotation = %q, want %q", updatedDeployment.Spec.Template.Annotations[operatordeploy.AnnotationLastBuildID], buildID)
+	}
+	if patchClient.patchCalls != 1 {
+		t.Fatalf("deployment patch calls = %d, want exactly one patch after completed Build Job", patchClient.patchCalls)
+	}
 
 	afterSecondReconcile := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
 	if afterSecondReconcile.Status.Phase != securityv1alpha1.PolicyPhaseRollingOut {
@@ -172,6 +182,91 @@ func TestEnvtestReconcilerCreatesBuildJobAndObservesJobStatus(t *testing.T) {
 	}
 	if afterSecondReconcile.Status.LastAppliedImage != builtImage {
 		t.Fatalf("lastAppliedImage = %q, want %q", afterSecondReconcile.Status.LastAppliedImage, builtImage)
+	}
+
+	rolledOutDeployment := markEnvtestDeploymentRolledOut(t, ctx, c, namespace, deployment.Name)
+	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("third reconcile after Deployment rollout: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("third reconcile result = %#v, want terminal success without explicit requeue", result)
+	}
+
+	succeededPolicy := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if succeededPolicy.Status.Phase != securityv1alpha1.PolicyPhaseSucceeded {
+		t.Fatalf("phase after rolled out deployment reconcile = %q, want %q", succeededPolicy.Status.Phase, securityv1alpha1.PolicyPhaseSucceeded)
+	}
+	if succeededPolicy.Status.LastRolloutTime == nil {
+		t.Fatalf("lastRolloutTime is nil, want rollout completion timestamp")
+	}
+	ready := findCondition(succeededPolicy.Status.Conditions, securityv1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want True after rollout", ready)
+	}
+	rolloutCompleted := findCondition(succeededPolicy.Status.Conditions, securityv1alpha1.ConditionRolloutCompleted)
+	if rolloutCompleted == nil || rolloutCompleted.Status != metav1.ConditionTrue {
+		t.Fatalf("RolloutCompleted condition = %#v, want True after rollout", rolloutCompleted)
+	}
+
+	deploymentGenerationAfterSuccess := rolledOutDeployment.Generation
+	policyResourceVersionAfterSuccess := succeededPolicy.ResourceVersion
+	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("fourth reconcile for terminal current run: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("fourth reconcile result = %#v, want no explicit requeue for terminal current run", result)
+	}
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 1)
+	afterRepeatedReconcileDeployment := getEnvtestDeployment(t, ctx, c, namespace, deployment.Name)
+	if afterRepeatedReconcileDeployment.Generation != deploymentGenerationAfterSuccess {
+		t.Fatalf("deployment generation after repeated reconcile = %d, want unchanged %d", afterRepeatedReconcileDeployment.Generation, deploymentGenerationAfterSuccess)
+	}
+	if patchClient.patchCalls != 1 {
+		t.Fatalf("deployment patch calls after repeated reconcile = %d, want still one", patchClient.patchCalls)
+	}
+	afterRepeatedReconcilePolicy := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if afterRepeatedReconcilePolicy.ResourceVersion != policyResourceVersionAfterSuccess {
+		t.Fatalf("policy resourceVersion after repeated reconcile = %q, want unchanged %q", afterRepeatedReconcilePolicy.ResourceVersion, policyResourceVersionAfterSuccess)
+	}
+
+	retriggeredPolicy := afterRepeatedReconcilePolicy.DeepCopy()
+	retriggeredPolicy.Spec.Trigger.ManualToken = "manual-retry-1"
+	if err := c.Update(ctx, retriggeredPolicy); err != nil {
+		t.Fatalf("update policy manualToken: %v", err)
+	}
+	retriggeredPolicy = getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	newBuildID := run.BuildID(retriggeredPolicy)
+	if newBuildID == buildID {
+		t.Fatalf("manualToken did not change buildID: %q", newBuildID)
+	}
+
+	result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("reconcile after manualToken change: %v", err)
+	}
+	if result.RequeueAfter != buildJobRequeueAfter {
+		t.Fatalf("manualToken reconcile result = %#v, want build job requeue", result)
+	}
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 2)
+	newBuildJobName := jobs.BuildJobName(policy.Name, newBuildID)
+	var newBuildJob batchv1.Job
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: newBuildJobName}, &newBuildJob); err != nil {
+		t.Fatalf("get retriggered build job %q: %v", newBuildJobName, err)
+	}
+	afterManualTokenReconcile := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if afterManualTokenReconcile.Status.Phase != securityv1alpha1.PolicyPhaseBuilding {
+		t.Fatalf("phase after manualToken reconcile = %q, want %q", afterManualTokenReconcile.Status.Phase, securityv1alpha1.PolicyPhaseBuilding)
+	}
+	if afterManualTokenReconcile.Status.LastBuildJobName != newBuildJobName {
+		t.Fatalf("lastBuildJobName after manualToken reconcile = %q, want %q", afterManualTokenReconcile.Status.LastBuildJobName, newBuildJobName)
+	}
+	if afterManualTokenReconcile.Status.LastAppliedImage != "" {
+		t.Fatalf("lastAppliedImage after manualToken run reset = %q, want empty before new build completes", afterManualTokenReconcile.Status.LastAppliedImage)
+	}
+	if patchClient.patchCalls != 1 {
+		t.Fatalf("deployment patch calls after manualToken build start = %d, want still one", patchClient.patchCalls)
 	}
 }
 
@@ -382,6 +477,61 @@ func getEnvtestDeployment(t *testing.T, ctx context.Context, c client.Client, na
 		t.Fatalf("get deployment %s/%s: %v", namespace, name, err)
 	}
 	return &deployment
+}
+
+func listEnvtestJobs(t *testing.T, ctx context.Context, c client.Client, namespace string) []batchv1.Job {
+	t.Helper()
+
+	var jobList batchv1.JobList
+	if err := c.List(ctx, &jobList, client.InNamespace(namespace)); err != nil {
+		t.Fatalf("list jobs in namespace %q: %v", namespace, err)
+	}
+	return jobList.Items
+}
+
+func assertEnvtestBuildJobCount(t *testing.T, ctx context.Context, c client.Client, namespace string, want int) {
+	t.Helper()
+
+	buildJobs := 0
+	for _, job := range listEnvtestJobs(t, ctx, c, namespace) {
+		if job.Labels[jobs.LabelJobType] == string(jobs.JobTypeBuild) {
+			buildJobs++
+		}
+	}
+	if buildJobs != want {
+		t.Fatalf("Build Job count = %d, want %d", buildJobs, want)
+	}
+}
+
+func markEnvtestDeploymentRolledOut(t *testing.T, ctx context.Context, c client.Client, namespace, name string) *appsv1.Deployment {
+	t.Helper()
+
+	deployment := getEnvtestDeployment(t, ctx, c, namespace, name)
+	replicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		replicas = *deployment.Spec.Replicas
+	}
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = replicas
+	deployment.Status.UpdatedReplicas = replicas
+	deployment.Status.ReadyReplicas = replicas
+	deployment.Status.AvailableReplicas = replicas
+	deployment.Status.Conditions = []appsv1.DeploymentCondition{
+		{
+			Type:   appsv1.DeploymentProgressing,
+			Status: corev1.ConditionTrue,
+			Reason: "NewReplicaSetAvailable",
+		},
+		{
+			Type:   appsv1.DeploymentAvailable,
+			Status: corev1.ConditionTrue,
+			Reason: "MinimumReplicasAvailable",
+		},
+	}
+	if err := c.Status().Update(ctx, deployment); err != nil {
+		t.Fatalf("status update rolled out deployment %s/%s: %v", namespace, name, err)
+	}
+	return getEnvtestDeployment(t, ctx, c, namespace, name)
 }
 
 func assertEnvtestFailedPreflight(t *testing.T, ctx context.Context, reconciler *AltImageUpdatePolicyReconciler, namespace, policyName, wantReason string) {
