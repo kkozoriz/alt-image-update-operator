@@ -197,6 +197,8 @@ def all_done_or_terminal(data: Dict[str, Any]) -> bool:
 
 
 def render_prompt(worker_prompt: str, task_id: str, worker_id: str, project_root: Path, tasks_path: Path) -> str:
+    kubeconfig = os.environ.get("KUBECONFIG", "")
+    kubeconfig_line = f"KUBECONFIG={kubeconfig}\n" if kubeconfig else ""
     return (
         worker_prompt.rstrip()
         + "\n\n---\n"
@@ -204,6 +206,7 @@ def render_prompt(worker_prompt: str, task_id: str, worker_id: str, project_root
         + f"WORKER_ID: {worker_id}\n"
         + f"PROJECT_ROOT: {project_root}\n"
         + f"TASKS_FILE: {tasks_path}\n"
+        + kubeconfig_line
         + "CONTEXT_MODE: fresh Codex exec session; use repository files, git history, tasks.json, and progress.txt as shared memory\n"
     )
 

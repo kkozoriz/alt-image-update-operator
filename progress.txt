@@ -47,3 +47,4 @@
 [2026-05-02T11:33:34Z] RALPH STOP max_iterations=1
 [2026-05-02T11:36:22Z] VALIDATION T004: Installed the generated CRD on the explicitly allowed remote minikube via ssh clouduser@185.120.186.138, then kubectl apply --dry-run=client passed for config/samples/security_v1alpha1_altimageupdatepolicy.yaml, config/demo/policy-always.yaml, and config/demo/policy-alt-apt-simulation.yaml.
 [2026-05-02T11:36:22Z] DONE T004: Sample and demo policy manifests are valid and ready for later demo/e2e tasks.
+[2026-05-02T11:41:46Z] RALPH TOOLING_IMPROVEMENT: documented the dedicated remote minikube kubeconfig path and made tools/ralph.py include KUBECONFIG in worker prompts when provided.

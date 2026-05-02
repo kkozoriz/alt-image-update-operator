@@ -101,6 +101,8 @@ ssh clouduser@185.120.186.138
 ```
 
 - Run live-cluster commands on that remote host over SSH, or use an explicitly provided kubeconfig that is confirmed to target only that remote minikube cluster.
+- The only local kubeconfig currently allowed for live-cluster validation is `$HOME/.kube-remote/minikube-config`, and only when it is confirmed with `kubectl --kubeconfig "$HOME/.kube-remote/minikube-config" get nodes` to target the remote minikube. This kubeconfig requires an SSH tunnel from local `127.0.0.1:16443` to remote `192.168.49.2:8443`.
+- If `$KUBECONFIG` is set to `$HOME/.kube-remote/minikube-config`, agents may use `kubectl` with that environment after verifying the current context/node is the allowed remote minikube. Do not use any other local kubeconfig.
 - If a validation command needs a live cluster and the remote minikube node is `NotReady`, mark the task `blocked` or skip only that live-cluster validation as appropriate for the task, and record the exact reason in `progress.txt`.
 - Never apply manifests, install CRDs, run controllers, or execute e2e scripts against a cluster unless the target cluster has been explicitly confirmed as the allowed remote minikube.
 

@@ -55,6 +55,8 @@ ssh clouduser@185.120.186.138
 ```
 
 - Команды live-cluster запускай на этом удаленном хосте через SSH или только с явно переданным kubeconfig, подтвержденным как kubeconfig этого minikube.
+- Единственный локальный kubeconfig, который можно использовать для live-cluster validation: `$HOME/.kube-remote/minikube-config`, если он передан через `$KUBECONFIG` и предварительно проверен командой `kubectl --kubeconfig "$HOME/.kube-remote/minikube-config" get nodes`. Этот kubeconfig работает только при поднятом SSH tunnel `127.0.0.1:16443 -> 192.168.49.2:8443` через `clouduser@185.120.186.138`.
+- Если в служебном блоке prompt есть `KUBECONFIG=...`, используй именно его для Kubernetes validation и все равно сначала проверь, что это remote minikube. Не используй `~/.kube/config`.
 - Если задача требует живой кластер, а удаленный minikube `NotReady`, не используй локальный кластер как замену. Отметь live-cluster validation как заблокированный/невыполненный согласно задаче и запиши точную причину в `progress.txt`.
 
 Формат записи в `progress.txt`:
