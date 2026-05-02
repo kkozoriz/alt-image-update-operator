@@ -270,6 +270,285 @@ func TestEnvtestReconcilerCreatesBuildJobAndObservesJobStatus(t *testing.T) {
 	}
 }
 
+func TestEnvtestAltAptSimulationCreatesOneCheckJobAndDoesNotDuplicate(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := envtestAltAptSimulationPolicy(namespace)
+	deployment := envtestDeployment(namespace, policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+	configMap := envtestBuildContextConfigMap(namespace, policy)
+
+	for _, object := range []client.Object{deployment, configMap, policy} {
+		if err := c.Create(ctx, object); err != nil {
+			t.Fatalf("create %T: %v", object, err)
+		}
+	}
+	policy = getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+
+	for i := 0; i < 2; i++ {
+		result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+		if err != nil {
+			t.Fatalf("reconcile %d: %v", i+1, err)
+		}
+		if result.RequeueAfter != checkJobRequeueAfter {
+			t.Fatalf("reconcile %d result = %#v, want check job requeue", i+1, result)
+		}
+	}
+
+	assertEnvtestCheckJobCount(t, ctx, c, namespace, 1)
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 0)
+
+	updated := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	wantCheckJobName := jobs.CheckJobName(policy.Name, run.BuildID(policy))
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseChecking {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseChecking)
+	}
+	if updated.Status.LastCheckJobName != wantCheckJobName {
+		t.Fatalf("lastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, wantCheckJobName)
+	}
+	if updated.Status.LastBuildJobName != "" {
+		t.Fatalf("lastBuildJobName = %q, want empty before check result", updated.Status.LastBuildJobName)
+	}
+}
+
+func TestEnvtestAltAptSimulationNoUpdatesSetsUpToDateWithoutBuildJob(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+	logReader := &fakeCheckJobLogReader{
+		logs: "Reading Package Lists...\n0 upgraded, 0 newly installed, 0 removed and 0 not upgraded.\n",
+	}
+	reconciler.CheckLogReader = logReader
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := createEnvtestAltAptSimulationInputs(t, ctx, c, namespace)
+	checkJob := createEnvtestCompletedCheckJobForPolicy(t, ctx, c, policy)
+	checkPod := createEnvtestCheckPodForJob(t, ctx, c, checkJob, "check-pod-no-updates")
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("reconcile completed no-updates Check Job: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want terminal UpToDate without explicit requeue", result)
+	}
+	if logReader.calls != 1 {
+		t.Fatalf("log reader calls = %d, want 1", logReader.calls)
+	}
+	if logReader.lastPodName != checkPod.Name {
+		t.Fatalf("log reader pod = %q, want %q", logReader.lastPodName, checkPod.Name)
+	}
+
+	updated := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseUpToDate {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseUpToDate)
+	}
+	if updated.Status.Reason != reasonNoUpdates {
+		t.Fatalf("reason = %q, want %q", updated.Status.Reason, reasonNoUpdates)
+	}
+	if updated.Status.LastCheckJobName != checkJob.Name {
+		t.Fatalf("lastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, checkJob.Name)
+	}
+	if updated.Status.LastCheckTime == nil {
+		t.Fatalf("lastCheckTime is nil, want completed check timestamp")
+	}
+	if updated.Status.LastBuildJobName != "" {
+		t.Fatalf("lastBuildJobName = %q, want empty when no updates are available", updated.Status.LastBuildJobName)
+	}
+	assertEnvtestCheckJobCount(t, ctx, c, namespace, 1)
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 0)
+
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionTrue {
+		t.Fatalf("CheckCompleted condition = %#v, want True", checkCompleted)
+	}
+	upToDate := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionUpToDate)
+	if upToDate == nil || upToDate.Status != metav1.ConditionTrue {
+		t.Fatalf("UpToDate condition = %#v, want True", upToDate)
+	}
+}
+
+func TestEnvtestAltAptSimulationUpdatesAvailableCreatesBuildJob(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+	logReader := &fakeCheckJobLogReader{
+		logs: "Reading Package Lists...\nInst glibc-core [2.35-alt1] (2.35-alt2 p10:updates [x86_64])\n",
+	}
+	reconciler.CheckLogReader = logReader
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := createEnvtestAltAptSimulationInputs(t, ctx, c, namespace)
+	checkJob := createEnvtestCompletedCheckJobForPolicy(t, ctx, c, policy)
+	createEnvtestCheckPodForJob(t, ctx, c, checkJob, "check-pod-updates")
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("reconcile completed updates-available Check Job: %v", err)
+	}
+	if result.RequeueAfter != buildJobRequeueAfter {
+		t.Fatalf("result = %#v, want build job requeue", result)
+	}
+
+	assertEnvtestCheckJobCount(t, ctx, c, namespace, 1)
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 1)
+
+	buildID := run.BuildID(policy)
+	buildJobName := jobs.BuildJobName(policy.Name, buildID)
+	var buildJob batchv1.Job
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: buildJobName}, &buildJob); err != nil {
+		t.Fatalf("get created Build Job %q: %v", buildJobName, err)
+	}
+	if buildJob.Labels[jobs.LabelJobType] != string(jobs.JobTypeBuild) {
+		t.Fatalf("Build Job type label = %q, want %q", buildJob.Labels[jobs.LabelJobType], jobs.JobTypeBuild)
+	}
+
+	updated := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseBuilding {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseBuilding)
+	}
+	if updated.Status.LastCheckJobName != checkJob.Name {
+		t.Fatalf("lastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, checkJob.Name)
+	}
+	if updated.Status.LastBuildJobName != buildJobName {
+		t.Fatalf("lastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJobName)
+	}
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionTrue {
+		t.Fatalf("CheckCompleted condition = %#v, want True", checkCompleted)
+	}
+	updatesAvailable := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionUpdatesAvailable)
+	if updatesAvailable == nil || updatesAvailable.Status != metav1.ConditionTrue {
+		t.Fatalf("UpdatesAvailable condition = %#v, want True", updatesAvailable)
+	}
+}
+
+func TestEnvtestAltAptSimulationUpdatesAvailableReusesCompletedBuildPipeline(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+	patchClient := &patchCountingClient{Client: c}
+	reconciler.Client = patchClient
+	logReader := &fakeCheckJobLogReader{
+		logs: "The following packages will be upgraded:\n  openssl\n1 upgraded, 0 newly installed, 0 removed and 0 not upgraded.\n",
+	}
+	reconciler.CheckLogReader = logReader
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := envtestAltAptSimulationPolicy(namespace)
+	if err := c.Create(ctx, policy); err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+	policy = getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+
+	buildID := run.BuildID(policy)
+	builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	deployment := envtestDeployment(namespace, policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+	deployment.Spec.Template.Spec.Containers[0].Image = builtImage
+	deployment.Spec.Template.Annotations = operatordeploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           builtImage,
+		BuildID:         buildID,
+		AppliedAt:       "2026-05-02T14:00:00Z",
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}.RequiredAnnotations()
+	configMap := envtestBuildContextConfigMap(namespace, policy)
+	for _, object := range []client.Object{deployment, configMap} {
+		if err := c.Create(ctx, object); err != nil {
+			t.Fatalf("create %T: %v", object, err)
+		}
+	}
+	markEnvtestDeploymentRolledOut(t, ctx, c, namespace, deployment.Name)
+
+	checkJob := createEnvtestCompletedCheckJobForPolicy(t, ctx, c, policy)
+	createEnvtestCheckPodForJob(t, ctx, c, checkJob, "check-pod-reuse")
+	buildJob := createEnvtestCompletedBuildJobForPolicy(t, ctx, c, policy)
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("reconcile completed check/build pipeline: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want terminal success without explicit requeue", result)
+	}
+	if patchClient.patchCalls != 0 {
+		t.Fatalf("deployment patch calls = %d, want 0 when completed build image is already applied", patchClient.patchCalls)
+	}
+
+	updated := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseSucceeded {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseSucceeded)
+	}
+	if updated.Status.LastCheckJobName != checkJob.Name {
+		t.Fatalf("lastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, checkJob.Name)
+	}
+	if updated.Status.LastBuildJobName != buildJob.Name {
+		t.Fatalf("lastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJob.Name)
+	}
+	if updated.Status.LastBuiltImage != builtImage || updated.Status.LastAppliedImage != builtImage {
+		t.Fatalf("built/applied image = %q/%q, want %q", updated.Status.LastBuiltImage, updated.Status.LastAppliedImage, builtImage)
+	}
+	ready := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want True", ready)
+	}
+}
+
+func TestEnvtestAltAptSimulationUnavailableLogsSetFailedStatus(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+	logReader := &fakeCheckJobLogReader{err: context.Canceled}
+	reconciler.CheckLogReader = logReader
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := createEnvtestAltAptSimulationInputs(t, ctx, c, namespace)
+	checkJob := createEnvtestCompletedCheckJobForPolicy(t, ctx, c, policy)
+	createEnvtestCheckPodForJob(t, ctx, c, checkJob, "check-pod-log-error")
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policy.Name}})
+	if err != nil {
+		t.Fatalf("reconcile completed Check Job with unavailable logs: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want terminal failed status without explicit requeue", result)
+	}
+	if logReader.calls != 1 {
+		t.Fatalf("log reader calls = %d, want 1", logReader.calls)
+	}
+
+	updated := getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != reasonCheckLogsUnavailable {
+		t.Fatalf("reason = %q, want %q", updated.Status.Reason, reasonCheckLogsUnavailable)
+	}
+	if updated.Status.LastCheckTime == nil {
+		t.Fatalf("lastCheckTime is nil, want terminal check timestamp")
+	}
+	if updated.Status.LastBuildJobName != "" {
+		t.Fatalf("lastBuildJobName = %q, want empty after log read failure", updated.Status.LastBuildJobName)
+	}
+	assertEnvtestCheckJobCount(t, ctx, c, namespace, 1)
+	assertEnvtestBuildJobCount(t, ctx, c, namespace, 0)
+
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionFalse {
+		t.Fatalf("CheckCompleted condition = %#v, want False", checkCompleted)
+	}
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionTrue {
+		t.Fatalf("Failed condition = %#v, want True", failed)
+	}
+}
+
 func TestEnvtestRejectsInvalidCheckMode(t *testing.T) {
 	ctx := context.Background()
 	c := envtestClientForTest(t)
@@ -424,6 +703,26 @@ func envtestPolicy(namespace string) *securityv1alpha1.AltImageUpdatePolicy {
 	return policy
 }
 
+func envtestAltAptSimulationPolicy(namespace string) *securityv1alpha1.AltImageUpdatePolicy {
+	policy := envtestPolicy(namespace)
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	return policy
+}
+
+func createEnvtestAltAptSimulationInputs(t *testing.T, ctx context.Context, c client.Client, namespace string) *securityv1alpha1.AltImageUpdatePolicy {
+	t.Helper()
+
+	policy := envtestAltAptSimulationPolicy(namespace)
+	deployment := envtestDeployment(namespace, policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+	configMap := envtestBuildContextConfigMap(namespace, policy)
+	for _, object := range []client.Object{deployment, configMap, policy} {
+		if err := c.Create(ctx, object); err != nil {
+			t.Fatalf("create %T: %v", object, err)
+		}
+	}
+	return getEnvtestPolicy(t, ctx, c, namespace, policy.Name)
+}
+
 func envtestDeployment(namespace, name, containerName string) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := map[string]string{"app": name}
@@ -434,6 +733,14 @@ func envtestDeployment(namespace, name, containerName string) *appsv1.Deployment
 	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 	deployment.Spec.Template.Labels = labels
 	return deployment
+}
+
+func envtestBuildContextConfigMap(namespace string, policy *securityv1alpha1.AltImageUpdatePolicy) *corev1.ConfigMap {
+	configMap := testConfigMap(policy.Spec.Build.Context.ConfigMapRef.Name, map[string]string{
+		policy.Spec.Build.Context.ConfigMapRef.DockerfileKey: "FROM registry.altlinux.org/alt/alt:p10\n",
+	})
+	configMap.Namespace = namespace
+	return configMap
 }
 
 func envtestJob(namespace, name string) *batchv1.Job {
@@ -479,6 +786,16 @@ func getEnvtestDeployment(t *testing.T, ctx context.Context, c client.Client, na
 	return &deployment
 }
 
+func getEnvtestJob(t *testing.T, ctx context.Context, c client.Client, namespace, name string) *batchv1.Job {
+	t.Helper()
+
+	var job batchv1.Job
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &job); err != nil {
+		t.Fatalf("get job %s/%s: %v", namespace, name, err)
+	}
+	return &job
+}
+
 func listEnvtestJobs(t *testing.T, ctx context.Context, c client.Client, namespace string) []batchv1.Job {
 	t.Helper()
 
@@ -487,6 +804,20 @@ func listEnvtestJobs(t *testing.T, ctx context.Context, c client.Client, namespa
 		t.Fatalf("list jobs in namespace %q: %v", namespace, err)
 	}
 	return jobList.Items
+}
+
+func assertEnvtestCheckJobCount(t *testing.T, ctx context.Context, c client.Client, namespace string, want int) {
+	t.Helper()
+
+	checkJobs := 0
+	for _, job := range listEnvtestJobs(t, ctx, c, namespace) {
+		if job.Labels[jobs.LabelJobType] == string(jobs.JobTypeCheck) {
+			checkJobs++
+		}
+	}
+	if checkJobs != want {
+		t.Fatalf("Check Job count = %d, want %d", checkJobs, want)
+	}
 }
 
 func assertEnvtestBuildJobCount(t *testing.T, ctx context.Context, c client.Client, namespace string, want int) {
@@ -532,6 +863,93 @@ func markEnvtestDeploymentRolledOut(t *testing.T, ctx context.Context, c client.
 		t.Fatalf("status update rolled out deployment %s/%s: %v", namespace, name, err)
 	}
 	return getEnvtestDeployment(t, ctx, c, namespace, name)
+}
+
+func createEnvtestCompletedCheckJobForPolicy(t *testing.T, ctx context.Context, c client.Client, policy *securityv1alpha1.AltImageUpdatePolicy) *batchv1.Job {
+	t.Helper()
+
+	checkJob, err := jobs.NewCheckJob(policy, jobs.CheckJobOptions{
+		RunKey:  run.RunKey(policy),
+		BuildID: run.BuildID(policy),
+	})
+	if err != nil {
+		t.Fatalf("NewCheckJob returned error: %v", err)
+	}
+	if err := c.Create(ctx, checkJob); err != nil {
+		t.Fatalf("create Check Job: %v", err)
+	}
+	return markEnvtestJobComplete(t, ctx, c, checkJob.Namespace, checkJob.Name)
+}
+
+func createEnvtestCompletedBuildJobForPolicy(t *testing.T, ctx context.Context, c client.Client, policy *securityv1alpha1.AltImageUpdatePolicy) *batchv1.Job {
+	t.Helper()
+
+	buildID := run.BuildID(policy)
+	builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	buildJob, err := jobs.NewBuildJob(policy, jobs.BuildJobOptions{
+		RunKey:     run.RunKey(policy),
+		BuildID:    buildID,
+		BuiltImage: builtImage,
+	})
+	if err != nil {
+		t.Fatalf("NewBuildJob returned error: %v", err)
+	}
+	if err := c.Create(ctx, buildJob); err != nil {
+		t.Fatalf("create Build Job: %v", err)
+	}
+	return markEnvtestJobComplete(t, ctx, c, buildJob.Namespace, buildJob.Name)
+}
+
+func markEnvtestJobComplete(t *testing.T, ctx context.Context, c client.Client, namespace, name string) *batchv1.Job {
+	t.Helper()
+
+	job := getEnvtestJob(t, ctx, c, namespace, name)
+	job.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	if err := c.Status().Update(ctx, job); err != nil {
+		t.Fatalf("status update completed Job %s/%s: %v", namespace, name, err)
+	}
+	return getEnvtestJob(t, ctx, c, namespace, name)
+}
+
+func createEnvtestCheckPodForJob(t *testing.T, ctx context.Context, c client.Client, checkJob *batchv1.Job, name string) *corev1.Pod {
+	t.Helper()
+
+	controller := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: checkJob.Namespace,
+			Labels: map[string]string{
+				batchv1.JobNameLabel:       checkJob.Name,
+				batchv1.ControllerUidLabel: string(checkJob.UID),
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: batchv1.SchemeGroupVersion.String(),
+				Kind:       "Job",
+				Name:       checkJob.Name,
+				UID:        checkJob.UID,
+				Controller: &controller,
+			}},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{
+				Name:    jobs.CheckContainerName,
+				Image:   "registry.altlinux.org/alt/alt:p10",
+				Command: []string{"/bin/sh", "-ec", "true"},
+			}},
+		},
+	}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatalf("create Check Job pod %s/%s: %v", pod.Namespace, pod.Name, err)
+	}
+	return pod
 }
 
 func assertEnvtestFailedPreflight(t *testing.T, ctx context.Context, reconciler *AltImageUpdatePolicyReconciler, namespace, policyName, wantReason string) {
