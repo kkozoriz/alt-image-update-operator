@@ -92,10 +92,20 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 	originalStatus := policy.Status.DeepCopy()
 	runKey := run.RunKey(&policy)
 	buildID := run.BuildID(&policy)
-	now := metav1.Now()
 
+	if isCurrentTerminalRun(&policy.Status, policy.Generation, runKey, buildID) {
+		logger.V(1).Info("AltImageUpdatePolicy current run is terminal; skipping pipeline", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "phase", policy.Status.Phase)
+		return ctrl.Result{}, nil
+	}
+
+	runChanged := policy.Status.CurrentRunKey != "" && policy.Status.CurrentRunKey != runKey
 	policy.Status.CurrentRunKey = runKey
 	policy.Status.BuildID = buildID
+	if runChanged {
+		resetRunProgress(&policy.Status)
+	}
+
+	now := metav1.Now()
 
 	var deployment appsv1.Deployment
 	deploymentKey := types.NamespacedName{Namespace: policy.Namespace, Name: policy.Spec.TargetRef.Name}
@@ -243,6 +253,33 @@ func deploymentHasContainer(deployment *appsv1.Deployment, containerName string)
 		}
 	}
 	return false
+}
+
+func isCurrentTerminalRun(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus, generation int64, runKey, buildID string) bool {
+	if policyStatus == nil {
+		return false
+	}
+	if policyStatus.ObservedGeneration != generation || policyStatus.CurrentRunKey != runKey || policyStatus.BuildID != buildID {
+		return false
+	}
+	return policyStatus.Phase == securityv1alpha1.PolicyPhaseSucceeded || policyStatus.Phase == securityv1alpha1.PolicyPhaseFailed
+}
+
+func resetRunProgress(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus) {
+	if policyStatus == nil {
+		return
+	}
+
+	policyStatus.LastCheckTime = nil
+	policyStatus.LastBuildStartTime = nil
+	policyStatus.LastBuildCompletionTime = nil
+	policyStatus.LastApplyTime = nil
+	policyStatus.LastRolloutTime = nil
+	policyStatus.LastCheckJobName = ""
+	policyStatus.LastBuildJobName = ""
+	policyStatus.LastBuiltImage = ""
+	policyStatus.LastAppliedImage = ""
+	policyStatus.TargetDeploymentGeneration = 0
 }
 
 func (r *AltImageUpdatePolicyReconciler) ensureBuildJob(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, opts jobs.BuildJobOptions) (*batchv1.Job, error) {

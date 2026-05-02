@@ -709,7 +709,7 @@
     {
       "id": "T020",
       "title": "Implement manual retrigger and terminal idempotency",
-      "status": "queued",
+      "status": "done",
       "priority": 81,
       "dependencies": [
         "T019"
@@ -736,11 +736,12 @@
       ],
       "implementation_notes": "This task should close PRD UC-004 and UC-005 for Always mode.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:08:53Z",
+      "completed_at": "2026-05-02T13:12:44Z",
+      "result_summary": "Added terminal-current-run short-circuiting so a Succeeded or Failed run with matching observedGeneration, currentRunKey, and buildID does not recreate Jobs, patch Deployments, or churn status conditions. Added run-progress reset when manualToken/generation changes to start a clean latest run, then verified manualToken changes create a new Build Job and generated image tag.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/run/build_id.go internal/controller/altimageupdatepolicy_controller_test.go internal/run/build_id_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller ./internal/run; same environment go test ./..."
     },
     {
       "id": "T021",

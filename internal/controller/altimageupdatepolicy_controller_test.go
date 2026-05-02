@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -412,6 +413,129 @@ func TestReconcileSuccessfulRolloutSetsSucceededReadyAndRolloutTime(t *testing.T
 	}
 }
 
+func TestReconcileSucceededCurrentRunDoesNotCreatePatchOrMutateStatus(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildID := run.BuildID(policy)
+	builtImage := markPolicySucceededForCurrentRun(t, policy, 8)
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	deployment := rolledOutDeploymentForPolicy(policy, builtImage, buildID, 8)
+
+	reconciler := newTestReconciler(t,
+		policy,
+		deployment,
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+	countingClient := &patchCountingClient{Client: reconciler.Client}
+	reconciler.Client = countingClient
+	beforeStatus := *getPolicy(t, ctx, reconciler.Client, policy.Name).Status.DeepCopy()
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue for terminal current run", result)
+	}
+	if countingClient.patchCalls != 0 {
+		t.Fatalf("Patch calls = %d, want no Deployment patch for terminal current run", countingClient.patchCalls)
+	}
+
+	buildJobs := listJobs(t, ctx, reconciler.Client)
+	if len(buildJobs.Items) != 1 {
+		t.Fatalf("build Jobs len = %d, want existing Job only", len(buildJobs.Items))
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if !reflect.DeepEqual(beforeStatus, updated.Status) {
+		t.Fatalf("status changed for terminal current run:\n before: %#v\n  after: %#v", beforeStatus, updated.Status)
+	}
+}
+
+func TestReconcileManualTokenChangeStartsNewRunBuildJobAndImageTag(t *testing.T) {
+	ctx := context.Background()
+	previousPolicy := testPolicy()
+	previousPolicy.Spec.Trigger.ManualToken = "first-run"
+	oldBuildID := run.BuildID(previousPolicy)
+	oldBuiltImage := markPolicySucceededForCurrentRun(t, previousPolicy, 8)
+	oldBuildJob := testBuildJobForPolicy(t, previousPolicy)
+	oldBuildJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+
+	policy := previousPolicy.DeepCopy()
+	policy.Generation++
+	policy.Spec.Trigger.ManualToken = "second-run"
+	newBuildID := run.BuildID(policy)
+	newBuiltImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, newBuildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	if newBuildID == oldBuildID {
+		t.Fatalf("new BuildID = %q, want different from previous %q", newBuildID, oldBuildID)
+	}
+	if newBuiltImage == oldBuiltImage {
+		t.Fatalf("new built image = %q, want different from previous %q", newBuiltImage, oldBuiltImage)
+	}
+
+	reconciler := newTestReconciler(t,
+		policy,
+		rolledOutDeploymentForPolicy(previousPolicy, oldBuiltImage, oldBuildID, 8),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		oldBuildJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.RequeueAfter != buildJobRequeueAfter {
+		t.Fatalf("RequeueAfter = %s, want %s for new running build", result.RequeueAfter, buildJobRequeueAfter)
+	}
+
+	buildJobs := listJobs(t, ctx, reconciler.Client)
+	if len(buildJobs.Items) != 2 {
+		t.Fatalf("build Jobs len = %d, want previous and new Jobs", len(buildJobs.Items))
+	}
+	newJobName := jobs.BuildJobName(policy.Name, newBuildID)
+	newJob := findJob(buildJobs.Items, newJobName)
+	if newJob == nil {
+		t.Fatalf("new build Job %q was not created; jobs = %#v", newJobName, buildJobs.Items)
+	}
+	if newJob.Annotations[jobs.AnnotationRunKey] != run.RunKey(policy) {
+		t.Fatalf("new Job run key annotation = %q, want %q", newJob.Annotations[jobs.AnnotationRunKey], run.RunKey(policy))
+	}
+	if !containsString(newJob.Spec.Template.Spec.Containers[0].Args, "--destination="+newBuiltImage) {
+		t.Fatalf("new build Job args = %v, want destination %q", newJob.Spec.Template.Spec.Containers[0].Args, newBuiltImage)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.CurrentRunKey != run.RunKey(policy) {
+		t.Fatalf("CurrentRunKey = %q, want %q", updated.Status.CurrentRunKey, run.RunKey(policy))
+	}
+	if updated.Status.BuildID != newBuildID {
+		t.Fatalf("BuildID = %q, want %q", updated.Status.BuildID, newBuildID)
+	}
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseBuilding {
+		t.Fatalf("Phase = %q, want %q for new run", updated.Status.Phase, securityv1alpha1.PolicyPhaseBuilding)
+	}
+	if updated.Status.LastBuildJobName != newJobName {
+		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, newJobName)
+	}
+	if updated.Status.LastBuildStartTime == nil {
+		t.Fatalf("LastBuildStartTime is nil, want timestamp for new run")
+	}
+	if updated.Status.LastBuiltImage != "" || updated.Status.LastAppliedImage != "" || updated.Status.LastRolloutTime != nil {
+		t.Fatalf("new run kept previous output status: lastBuilt=%q lastApplied=%q lastRollout=%v", updated.Status.LastBuiltImage, updated.Status.LastAppliedImage, updated.Status.LastRolloutTime)
+	}
+}
+
 func TestReconcileFailedRolloutSetsFailedStatus(t *testing.T) {
 	ctx := context.Background()
 	policy := testPolicy()
@@ -740,6 +864,75 @@ func testBuildJobForPolicy(t *testing.T, policy *securityv1alpha1.AltImageUpdate
 	return buildJob
 }
 
+func markPolicySucceededForCurrentRun(t *testing.T, policy *securityv1alpha1.AltImageUpdatePolicy, targetDeploymentGeneration int64) string {
+	t.Helper()
+
+	buildID := run.BuildID(policy)
+	builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	statusTime := metav1.NewTime(time.Date(2026, 5, 2, 13, 0, 0, 0, time.UTC))
+	message := "Deployment rollout completed for image " + builtImage
+	policy.Status = securityv1alpha1.AltImageUpdatePolicyStatus{
+		ObservedGeneration:         policy.Generation,
+		Phase:                      securityv1alpha1.PolicyPhaseSucceeded,
+		BuildID:                    buildID,
+		CurrentRunKey:              run.RunKey(policy),
+		LastBuildStartTime:         &statusTime,
+		LastBuildCompletionTime:    &statusTime,
+		LastApplyTime:              &statusTime,
+		LastRolloutTime:            &statusTime,
+		LastBuildJobName:           jobs.BuildJobName(policy.Name, buildID),
+		LastBuiltImage:             builtImage,
+		LastAppliedImage:           builtImage,
+		TargetDeploymentGeneration: targetDeploymentGeneration,
+		Reason:                     reasonRolloutCompleted,
+		Message:                    message,
+		Conditions: []metav1.Condition{
+			terminalCondition(policy.Generation, securityv1alpha1.ConditionReady, metav1.ConditionTrue, reasonRolloutCompleted, message, statusTime),
+			terminalCondition(policy.Generation, securityv1alpha1.ConditionFailed, metav1.ConditionFalse, reasonRolloutCompleted, message, statusTime),
+			terminalCondition(policy.Generation, securityv1alpha1.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, message, statusTime),
+			terminalCondition(policy.Generation, securityv1alpha1.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, message, statusTime),
+			terminalCondition(policy.Generation, securityv1alpha1.ConditionDeploymentUpdated, metav1.ConditionTrue, reasonDeploymentAlreadyUpdated, message, statusTime),
+			terminalCondition(policy.Generation, securityv1alpha1.ConditionRolloutCompleted, metav1.ConditionTrue, reasonRolloutCompleted, message, statusTime),
+		},
+	}
+	return builtImage
+}
+
+func terminalCondition(generation int64, conditionType string, status metav1.ConditionStatus, reason, message string, transitionTime metav1.Time) metav1.Condition {
+	return metav1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		ObservedGeneration: generation,
+		LastTransitionTime: transitionTime,
+		Reason:             reason,
+		Message:            message,
+	}
+}
+
+func rolledOutDeploymentForPolicy(policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, generation int64) *appsv1.Deployment {
+	replicas := int32(1)
+	deployment := testDeployment(policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+	deployment.Generation = generation
+	deployment.Spec.Replicas = &replicas
+	deployment.Spec.Template.Spec.Containers[0].Image = builtImage
+	deployment.Spec.Template.Annotations = operatordeploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           builtImage,
+		BuildID:         buildID,
+		AppliedAt:       "2026-05-02T13:00:00Z",
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}.RequiredAnnotations()
+	deployment.Status.ObservedGeneration = generation
+	deployment.Status.Replicas = replicas
+	deployment.Status.UpdatedReplicas = replicas
+	deployment.Status.AvailableReplicas = replicas
+	return deployment
+}
+
 func requestFor(policy *securityv1alpha1.AltImageUpdatePolicy) ctrl.Request {
 	return ctrl.Request{
 		NamespacedName: types.NamespacedName{
@@ -777,6 +970,15 @@ func listJobs(t *testing.T, ctx context.Context, c client.Client) *batchv1.JobLi
 		t.Fatalf("list jobs: %v", err)
 	}
 	return &jobList
+}
+
+func findJob(jobs []batchv1.Job, name string) *batchv1.Job {
+	for i := range jobs {
+		if jobs[i].Name == name {
+			return &jobs[i]
+		}
+	}
+	return nil
 }
 
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
