@@ -563,7 +563,7 @@
     {
       "id": "T016",
       "title": "Implement Always mode Build Job creation",
-      "status": "queued",
+      "status": "done",
       "priority": 85,
       "dependencies": [
         "T010",
@@ -589,11 +589,12 @@
       ],
       "implementation_notes": "Use deterministic names and labels from internal/jobs. Treat AlreadyExists as a normal idempotent outcome.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:52:14Z",
+      "completed_at": "2026-05-02T12:54:57Z",
+      "result_summary": "Extended reconcile so Always-mode policies compute the deterministic build image, create or find the deterministic Kaniko Build Job for the current run, treat existing Jobs idempotently, and update status to Building with lastBuildJobName and build start time. Added controller tests proving repeated reconcile creates exactly one Build Job with ownerReference, labels, annotations, destination image, and Building status.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller; same environment go test ./..."
     },
     {
       "id": "T017",

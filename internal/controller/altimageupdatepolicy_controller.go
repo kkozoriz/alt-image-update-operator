@@ -21,9 +21,12 @@ import (
 	"fmt"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	operatorimage "alt-image-update-operator/internal/image"
+	"alt-image-update-operator/internal/jobs"
 	"alt-image-update-operator/internal/run"
 	operatorstatus "alt-image-update-operator/internal/status"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -41,6 +44,8 @@ const (
 	reasonTargetContainerNotFound  = "TargetContainerNotFound"
 	reasonBuildContextNotFound     = "BuildContextNotFound"
 	reasonDockerfileKeyNotFound    = "DockerfileKeyNotFound"
+	reasonBuildImageInvalid        = "BuildImageInvalid"
+	reasonBuildJobEnsured          = "BuildJobEnsured"
 )
 
 // AltImageUpdatePolicyReconciler reconciles an AltImageUpdatePolicy object.
@@ -115,6 +120,37 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
 	}
 
+	if policy.Spec.Check.Mode == securityv1alpha1.CheckModeAlways {
+		builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+		if err != nil {
+			message := fmt.Sprintf("Build output image %q cannot be converted to a build tag: %v", policy.Spec.Build.OutputImage, err)
+			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildImageInvalid, message)
+			return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
+		}
+
+		buildJob, err := r.ensureBuildJob(ctx, &policy, jobs.BuildJobOptions{
+			RunKey:     runKey,
+			BuildID:    buildID,
+			BuiltImage: builtImage,
+		})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		message := fmt.Sprintf("Build Job %q is present for image %q", buildJob.Name, builtImage)
+		operatorstatus.MarkBuilding(&policy.Status, policy.Generation, now, reasonBuildJobEnsured, message)
+		policy.Status.LastBuildJobName = buildJob.Name
+		if policy.Status.LastBuildStartTime == nil || policy.Status.LastBuildJobName != originalStatus.LastBuildJobName {
+			policy.Status.LastBuildStartTime = &now
+		}
+		if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		logger.V(1).Info("AltImageUpdatePolicy build Job ensured", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
+		return ctrl.Result{}, nil
+	}
+
 	successMessage := "Policy preflight checks completed"
 	operatorstatus.SetPhase(&policy.Status, policy.Generation, operatorstatus.PhasePending, reasonPreflightSucceeded, successMessage)
 	operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionFailed, metav1.ConditionFalse, reasonPreflightSucceeded, successMessage, now)
@@ -136,6 +172,35 @@ func deploymentHasContainer(deployment *appsv1.Deployment, containerName string)
 		}
 	}
 	return false
+}
+
+func (r *AltImageUpdatePolicyReconciler) ensureBuildJob(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, opts jobs.BuildJobOptions) (*batchv1.Job, error) {
+	jobName := jobs.BuildJobName(policy.Name, opts.BuildID)
+	jobKey := types.NamespacedName{Namespace: policy.Namespace, Name: jobName}
+
+	var existing batchv1.Job
+	if err := r.Get(ctx, jobKey, &existing); err != nil {
+		if !errors.IsNotFound(err) {
+			return nil, err
+		}
+
+		buildJob, err := jobs.NewBuildJob(policy, opts)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.Create(ctx, buildJob); err != nil {
+			if !errors.IsAlreadyExists(err) {
+				return nil, err
+			}
+			if err := r.Get(ctx, jobKey, &existing); err != nil {
+				return nil, err
+			}
+			return &existing, nil
+		}
+		return buildJob, nil
+	}
+
+	return &existing, nil
 }
 
 func (r *AltImageUpdatePolicyReconciler) updatePolicyStatus(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) error {

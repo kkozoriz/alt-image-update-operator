@@ -5,8 +5,11 @@ import (
 	"testing"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	operatorimage "alt-image-update-operator/internal/image"
+	"alt-image-update-operator/internal/jobs"
 	"alt-image-update-operator/internal/run"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +24,7 @@ const testNamespace = "default"
 func TestReconcilePreflightSuccessUpdatesObservedGenerationAndRunIdentity(t *testing.T) {
 	ctx := context.Background()
 	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
 	reconciler := newTestReconciler(t,
 		policy,
 		testDeployment("demo-app", "app"),
@@ -53,6 +57,77 @@ func TestReconcilePreflightSuccessUpdatesObservedGenerationAndRunIdentity(t *tes
 	}
 	if failed.Status != metav1.ConditionFalse {
 		t.Fatalf("Failed condition status = %q, want %q", failed.Status, metav1.ConditionFalse)
+	}
+}
+
+func TestReconcileAlwaysCreatesOneBuildJobAndBuildingStatus(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+	)
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("first Reconcile returned error: %v", err)
+	}
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("second Reconcile returned error: %v", err)
+	}
+
+	buildJobs := listJobs(t, ctx, reconciler.Client)
+	if len(buildJobs.Items) != 1 {
+		t.Fatalf("build Jobs len = %d, want 1", len(buildJobs.Items))
+	}
+
+	buildJob := buildJobs.Items[0]
+	buildID := run.BuildID(policy)
+	runKey := run.RunKey(policy)
+	wantJobName := jobs.BuildJobName(policy.Name, buildID)
+	if buildJob.Name != wantJobName {
+		t.Fatalf("build Job name = %q, want %q", buildJob.Name, wantJobName)
+	}
+	if buildJob.Labels[jobs.LabelJobType] != string(jobs.JobTypeBuild) {
+		t.Fatalf("job type label = %q, want %q", buildJob.Labels[jobs.LabelJobType], jobs.JobTypeBuild)
+	}
+	if buildJob.Labels[jobs.LabelManagedBy] == "" || buildJob.Labels[jobs.LabelRunKey] == "" || buildJob.Labels[jobs.LabelBuildID] == "" {
+		t.Fatalf("build Job labels are missing controller lookup labels: %#v", buildJob.Labels)
+	}
+	if buildJob.Annotations[jobs.AnnotationRunKey] != runKey {
+		t.Fatalf("run key annotation = %q, want %q", buildJob.Annotations[jobs.AnnotationRunKey], runKey)
+	}
+	if len(buildJob.OwnerReferences) != 1 {
+		t.Fatalf("ownerReferences len = %d, want 1", len(buildJob.OwnerReferences))
+	}
+	owner := buildJob.OwnerReferences[0]
+	if owner.APIVersion != securityv1alpha1.GroupVersion.String() || owner.Kind != "AltImageUpdatePolicy" || owner.Name != policy.Name || owner.UID != policy.UID {
+		t.Fatalf("ownerReference = %#v, want policy owner", owner)
+	}
+	if owner.Controller == nil || !*owner.Controller {
+		t.Fatalf("ownerReference controller = %v, want true", owner.Controller)
+	}
+
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	if len(buildJob.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("build Job containers len = %d, want 1", len(buildJob.Spec.Template.Spec.Containers))
+	}
+	if !containsString(buildJob.Spec.Template.Spec.Containers[0].Args, "--destination="+wantImage) {
+		t.Fatalf("build Job args = %v, want destination %q", buildJob.Spec.Template.Spec.Containers[0].Args, wantImage)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseBuilding {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseBuilding)
+	}
+	if updated.Status.LastBuildJobName != wantJobName {
+		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, wantJobName)
+	}
+	if updated.Status.LastBuildStartTime == nil {
+		t.Fatalf("LastBuildStartTime is nil, want build start timestamp")
 	}
 }
 
@@ -144,6 +219,9 @@ func newTestReconciler(t *testing.T, objects ...client.Object) *AltImageUpdatePo
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add core scheme: %v", err)
 	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
 
 	return &AltImageUpdatePolicyReconciler{
 		Client: fake.NewClientBuilder().
@@ -165,6 +243,7 @@ func testPolicy() *securityv1alpha1.AltImageUpdatePolicy {
 			Name:       "demo-policy",
 			Namespace:  testNamespace,
 			Generation: 3,
+			UID:        "policy-uid",
 		},
 		Spec: securityv1alpha1.AltImageUpdatePolicySpec{
 			Alt: securityv1alpha1.AltSpec{
@@ -248,6 +327,16 @@ func getPolicy(t *testing.T, ctx context.Context, c client.Client, name string) 
 	return &policy
 }
 
+func listJobs(t *testing.T, ctx context.Context, c client.Client) *batchv1.JobList {
+	t.Helper()
+
+	var jobList batchv1.JobList
+	if err := c.List(ctx, &jobList, client.InNamespace(testNamespace)); err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	return &jobList
+}
+
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
 	for i := range conditions {
 		if conditions[i].Type == conditionType {
@@ -255,4 +344,13 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 		}
 	}
 	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
