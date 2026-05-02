@@ -820,7 +820,7 @@
     {
       "id": "T023",
       "title": "Branch AltAptSimulation result to UpToDate or build",
-      "status": "queued",
+      "status": "done",
       "priority": 78,
       "dependencies": [
         "T008",
@@ -850,11 +850,12 @@
       ],
       "implementation_notes": "Reuse existing build and deployment code paths. Avoid copying separate pipeline logic for AltAptSimulation.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:22:57Z",
+      "completed_at": "2026-05-02T13:27:43Z",
+      "result_summary": "Implemented AltAptSimulation completed-log branching: NoUpdates now marks the policy UpToDate with Ready=True and no Build Job, UpdatesAvailable continues into a shared build/apply/rollout pipeline, parser failure outcomes mark the policy Failed without exposing raw logs, and UpToDate is treated as terminal for current-run idempotency. Added controller tests for NoUpdates, UpdatesAvailable build creation, UpdatesAvailable reuse of the full build pipeline, parser failure, and UpToDate repeated reconcile.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/check/parser.go internal/status/conditions.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller ./internal/check ./internal/status; same environment go test ./..."
     },
     {
       "id": "T024",

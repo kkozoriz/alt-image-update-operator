@@ -24,6 +24,7 @@ import (
 	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	"alt-image-update-operator/internal/check"
 	"alt-image-update-operator/internal/deploy"
 	operatorimage "alt-image-update-operator/internal/image"
 	"alt-image-update-operator/internal/jobs"
@@ -54,6 +55,8 @@ const (
 	reasonCheckJobCompleted        = "CheckJobCompleted"
 	reasonCheckLogsUnavailable     = "CheckLogsUnavailable"
 	reasonCheckJobFailed           = "CheckJobFailed"
+	reasonNoUpdates                = "NoUpdates"
+	reasonUpdatesAvailable         = "UpdatesAvailable"
 	reasonBuildJobEnsured          = "BuildJobEnsured"
 	reasonBuildJobRunning          = "BuildJobRunning"
 	reasonBuildJobCompleted        = "BuildJobCompleted"
@@ -189,7 +192,7 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 		policy.Status.LastCheckJobName = checkJob.Name
 
 		if complete := findJobCondition(checkJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
-			_, podName, err := r.readCheckJobLogs(ctx, checkJob)
+			checkLogs, podName, err := r.readCheckJobLogs(ctx, checkJob)
 			if err != nil {
 				message := fmt.Sprintf("Check Job %q completed, but check logs are unavailable: %v", checkJob.Name, err)
 				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonCheckLogsUnavailable, message)
@@ -205,19 +208,71 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 				return ctrl.Result{}, nil
 			}
 
-			message := fmt.Sprintf("Check Job %q completed and logs were read from pod %q", checkJob.Name, podName)
-			operatorstatus.SetPhase(&policy.Status, policy.Generation, operatorstatus.PhasePending, reasonCheckJobCompleted, message)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue, reasonCheckJobCompleted, message, now)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionFailed, metav1.ConditionFalse, reasonCheckJobCompleted, message, now)
 			if policy.Status.LastCheckTime == nil || originalStatus.LastCheckJobName != checkJob.Name {
 				policy.Status.LastCheckTime = &now
 			}
-			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
-				return ctrl.Result{}, err
-			}
 
-			logger.V(1).Info("AltImageUpdatePolicy check Job completed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name)
-			return ctrl.Result{}, nil
+			checkResult := check.ParseAltAptSimulationLog(checkLogs, true)
+			switch checkResult.Outcome {
+			case check.OutcomeNoUpdates:
+				message := fmt.Sprintf("Check Job %q completed from pod %q: no ALT package updates are available", checkJob.Name, podName)
+				operatorstatus.MarkUpToDate(&policy.Status, policy.Generation, now, reasonNoUpdates, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue, reasonNoUpdates, message, now)
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check found no updates", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name)
+				return ctrl.Result{}, nil
+
+			case check.OutcomeUpdatesAvailable:
+				message := fmt.Sprintf("Check Job %q completed from pod %q: ALT package updates are available", checkJob.Name, podName)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue, reasonUpdatesAvailable, message, now)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionUpdatesAvailable, metav1.ConditionTrue, reasonUpdatesAvailable, message, now)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionFailed, metav1.ConditionFalse, reasonUpdatesAvailable, message, now)
+
+				result, buildJob, err := r.runBuildPipeline(ctx, &policy, &deployment, originalStatus, runKey, buildID, now)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				buildJobName := ""
+				if buildJob != nil {
+					buildJobName = buildJob.Name
+				}
+				logger.V(1).Info("AltImageUpdatePolicy check found updates and continued build pipeline", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "checkJob", checkJob.Name, "buildJob", buildJobName, "phase", policy.Status.Phase, "reason", policy.Status.Reason)
+				return result, nil
+
+			case check.OutcomeCheckFailed:
+				reason := checkResult.Reason
+				if reason == "" {
+					reason = string(check.OutcomeCheckFailed)
+				}
+				message := fmt.Sprintf("Check Job %q completed from pod %q, but ALT apt simulation could not be classified as successful: %s", checkJob.Name, podName, checkResult.Message)
+				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reason, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reason, message, now)
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check log classification failed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name, "reason", reason)
+				return ctrl.Result{}, nil
+
+			default:
+				reason := "CheckResultUnknown"
+				message := fmt.Sprintf("Check Job %q completed from pod %q, but ALT apt simulation returned unknown outcome %q", checkJob.Name, podName, checkResult.Outcome)
+				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reason, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reason, message, now)
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check log classification was unknown", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name, "outcome", checkResult.Outcome)
+				return ctrl.Result{}, nil
+			}
 		}
 
 		if failed := findJobCondition(checkJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
@@ -249,93 +304,20 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	if policy.Spec.Check.Mode == securityv1alpha1.CheckModeAlways {
-		builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
-		if err != nil {
-			message := fmt.Sprintf("Build output image %q cannot be converted to a build tag: %v", policy.Spec.Build.OutputImage, err)
-			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildImageInvalid, message)
-			return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
-		}
-
-		buildJob, err := r.ensureBuildJob(ctx, &policy, jobs.BuildJobOptions{
-			RunKey:     runKey,
-			BuildID:    buildID,
-			BuiltImage: builtImage,
-		})
+		result, buildJob, err := r.runBuildPipeline(ctx, &policy, &deployment, originalStatus, runKey, buildID, now)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-
-		policy.Status.LastBuildJobName = buildJob.Name
-		if policy.Status.LastBuildStartTime == nil || originalStatus.LastBuildJobName != buildJob.Name {
-			policy.Status.LastBuildStartTime = &now
-		}
-
-		if complete := findJobCondition(buildJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
-			buildMessage := fmt.Sprintf("Build Job %q completed and published image %q", buildJob.Name, builtImage)
-			operatorstatus.MarkApplying(&policy.Status, policy.Generation, now, reasonBuildJobCompleted, buildMessage)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
-			policy.Status.LastBuiltImage = builtImage
-			if policy.Status.LastBuildCompletionTime == nil || originalStatus.LastBuiltImage != builtImage || originalStatus.LastBuildJobName != buildJob.Name {
-				policy.Status.LastBuildCompletionTime = &now
-			}
-
-			deploymentPatched, appliedAt, err := r.applyBuiltImageToDeployment(ctx, &deployment, &policy, builtImage, buildID, now)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			applyReason := reasonDeploymentAlreadyUpdated
-			applyMessage := fmt.Sprintf("Deployment %q already uses image %q with required policy annotations", deployment.Name, builtImage)
-			if deploymentPatched {
-				applyReason = reasonDeploymentPatched
-				applyMessage = fmt.Sprintf("Patched Deployment %q container %q to image %q", deployment.Name, policy.Spec.ContainerName, builtImage)
-			}
-			operatorstatus.MarkRollout(&policy.Status, policy.Generation, now, applyReason, applyMessage)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionDeploymentUpdated, metav1.ConditionTrue, applyReason, applyMessage, now)
-			policy.Status.LastAppliedImage = builtImage
-			policy.Status.TargetDeploymentGeneration = deployment.Generation
-			if policy.Status.LastApplyTime == nil || originalStatus.LastAppliedImage != builtImage || deploymentPatched {
-				policy.Status.LastApplyTime = appliedAt
-			}
-
-			result, err := r.observeDeploymentRollout(ctx, &policy, &deployment, originalStatus, builtImage, now)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			logger.V(1).Info("AltImageUpdatePolicy observed Deployment rollout", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name, "deployment", deployment.Name, "patched", deploymentPatched, "phase", policy.Status.Phase, "reason", policy.Status.Reason)
-			return result, nil
-		}
-
-		if failed := findJobCondition(buildJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
-			message := jobFailureMessage(buildJob, failed, "Build Job")
-			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildJobFailed, message)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
-			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			logger.V(1).Info("AltImageUpdatePolicy build Job failed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
-			return ctrl.Result{}, nil
-		}
-
-		message := fmt.Sprintf("Build Job %q is present for image %q", buildJob.Name, builtImage)
-		if buildJob.Status.Active > 0 {
-			message = fmt.Sprintf("Build Job %q is running for image %q", buildJob.Name, builtImage)
-		}
-		operatorstatus.MarkBuilding(&policy.Status, policy.Generation, now, reasonBuildJobRunning, message)
 		if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
 			return ctrl.Result{}, err
 		}
 
-		logger.V(1).Info("AltImageUpdatePolicy build Job ensured", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
-		return ctrl.Result{RequeueAfter: buildJobRequeueAfter}, nil
+		buildJobName := ""
+		if buildJob != nil {
+			buildJobName = buildJob.Name
+		}
+		logger.V(1).Info("AltImageUpdatePolicy build pipeline reconciled", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJobName, "phase", policy.Status.Phase, "reason", policy.Status.Reason)
+		return result, nil
 	}
 
 	successMessage := "Policy preflight checks completed"
@@ -368,7 +350,9 @@ func isCurrentTerminalRun(policyStatus *securityv1alpha1.AltImageUpdatePolicySta
 	if policyStatus.ObservedGeneration != generation || policyStatus.CurrentRunKey != runKey || policyStatus.BuildID != buildID {
 		return false
 	}
-	return policyStatus.Phase == securityv1alpha1.PolicyPhaseSucceeded || policyStatus.Phase == securityv1alpha1.PolicyPhaseFailed
+	return policyStatus.Phase == securityv1alpha1.PolicyPhaseSucceeded ||
+		policyStatus.Phase == securityv1alpha1.PolicyPhaseFailed ||
+		policyStatus.Phase == securityv1alpha1.PolicyPhaseUpToDate
 }
 
 func resetRunProgress(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus) {
@@ -444,6 +428,80 @@ func (r *AltImageUpdatePolicyReconciler) ensureCheckJob(ctx context.Context, pol
 	}
 
 	return &existing, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) runBuildPipeline(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, deployment *appsv1.Deployment, originalStatus *securityv1alpha1.AltImageUpdatePolicyStatus, runKey, buildID string, now metav1.Time) (ctrl.Result, *batchv1.Job, error) {
+	builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		message := fmt.Sprintf("Build output image %q cannot be converted to a build tag: %v", policy.Spec.Build.OutputImage, err)
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildImageInvalid, message)
+		return ctrl.Result{}, nil, nil
+	}
+
+	buildJob, err := r.ensureBuildJob(ctx, policy, jobs.BuildJobOptions{
+		RunKey:     runKey,
+		BuildID:    buildID,
+		BuiltImage: builtImage,
+	})
+	if err != nil {
+		return ctrl.Result{}, nil, err
+	}
+
+	policy.Status.LastBuildJobName = buildJob.Name
+	if policy.Status.LastBuildStartTime == nil || originalStatus.LastBuildJobName != buildJob.Name {
+		policy.Status.LastBuildStartTime = &now
+	}
+
+	if complete := findJobCondition(buildJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
+		buildMessage := fmt.Sprintf("Build Job %q completed and published image %q", buildJob.Name, builtImage)
+		operatorstatus.MarkApplying(&policy.Status, policy.Generation, now, reasonBuildJobCompleted, buildMessage)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
+		policy.Status.LastBuiltImage = builtImage
+		if policy.Status.LastBuildCompletionTime == nil || originalStatus.LastBuiltImage != builtImage || originalStatus.LastBuildJobName != buildJob.Name {
+			policy.Status.LastBuildCompletionTime = &now
+		}
+
+		deploymentPatched, appliedAt, err := r.applyBuiltImageToDeployment(ctx, deployment, policy, builtImage, buildID, now)
+		if err != nil {
+			return ctrl.Result{}, buildJob, err
+		}
+
+		applyReason := reasonDeploymentAlreadyUpdated
+		applyMessage := fmt.Sprintf("Deployment %q already uses image %q with required policy annotations", deployment.Name, builtImage)
+		if deploymentPatched {
+			applyReason = reasonDeploymentPatched
+			applyMessage = fmt.Sprintf("Patched Deployment %q container %q to image %q", deployment.Name, policy.Spec.ContainerName, builtImage)
+		}
+		operatorstatus.MarkRollout(&policy.Status, policy.Generation, now, applyReason, applyMessage)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionDeploymentUpdated, metav1.ConditionTrue, applyReason, applyMessage, now)
+		policy.Status.LastAppliedImage = builtImage
+		policy.Status.TargetDeploymentGeneration = deployment.Generation
+		if policy.Status.LastApplyTime == nil || originalStatus.LastAppliedImage != builtImage || deploymentPatched {
+			policy.Status.LastApplyTime = appliedAt
+		}
+
+		result, err := r.observeDeploymentRollout(ctx, policy, deployment, originalStatus, builtImage, now)
+		if err != nil {
+			return ctrl.Result{}, buildJob, err
+		}
+		return result, buildJob, nil
+	}
+
+	if failed := findJobCondition(buildJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
+		message := jobFailureMessage(buildJob, failed, "Build Job")
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildJobFailed, message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
+		return ctrl.Result{}, buildJob, nil
+	}
+
+	message := fmt.Sprintf("Build Job %q is present for image %q", buildJob.Name, builtImage)
+	if buildJob.Status.Active > 0 {
+		message = fmt.Sprintf("Build Job %q is running for image %q", buildJob.Name, builtImage)
+	}
+	operatorstatus.MarkBuilding(&policy.Status, policy.Generation, now, reasonBuildJobRunning, message)
+	return ctrl.Result{RequeueAfter: buildJobRequeueAfter}, buildJob, nil
 }
 
 func (r *AltImageUpdatePolicyReconciler) readCheckJobLogs(ctx context.Context, checkJob *batchv1.Job) (string, string, error) {
