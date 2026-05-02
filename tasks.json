@@ -51,7 +51,7 @@
     {
       "id": "T002",
       "title": "Scaffold AltImageUpdatePolicy API and controller",
-      "status": "queued",
+      "status": "done",
       "priority": 99,
       "dependencies": [
         "T001"
@@ -79,11 +79,12 @@
       ],
       "implementation_notes": "Prefer Kubebuilder create api if available. Keep reconcile behavior minimal in this task; product state machine belongs to later controller tasks.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-59614",
+      "started_at": "2026-05-02T11:10:04Z",
+      "completed_at": "2026-05-02T11:12:55Z",
+      "result_summary": "Scaffolded the namespaced security.altlinux.org/v1alpha1 AltImageUpdatePolicy API kind, generated deepcopy and CRD manifests, added a minimal controller-runtime reconciler, registered the API scheme and controller in the manager, enabled CRD inclusion in the default kustomization, and added a minimal sample manifest.",
+      "validation_result": "Passed with sandbox-safe environment: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make generate; same environment make manifests; same environment go test ./..."
     },
     {
       "id": "T003",

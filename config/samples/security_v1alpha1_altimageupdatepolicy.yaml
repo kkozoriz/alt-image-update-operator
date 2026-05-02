@@ -1,0 +1,8 @@
+apiVersion: security.altlinux.org/v1alpha1
+kind: AltImageUpdatePolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: alt-image-update-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: altimageupdatepolicy-sample
+spec: {}

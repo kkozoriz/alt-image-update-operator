@@ -20,3 +20,8 @@
 [2026-05-02T11:04:07Z] WORKER_PROMPT_FIX: tightened prompts/03_worker_prompt.md so tasks are not marked done unless required validation and the required git commit succeed.
 [2026-05-02T11:06:18Z] RALPH TOOLING_IMPROVEMENT: added --reasoning-effort to tools/ralph.py and defaulted worker runs to high reasoning effort.
 [2026-05-02T11:08:30Z] RALPH TOOLING_IMPROVEMENT: added --reset-task and --retry-task to tools/ralph.py so failed or blocked tasks can be resumed intentionally.
+[2026-05-02T11:10:04Z] RALPH START worker_id=ralph-59614 model=gpt-5.5 reasoning_effort=high
+[2026-05-02T11:10:04Z] RALPH ASSIGN T002: Scaffold AltImageUpdatePolicy API and controller
+[2026-05-02T11:10:25Z] START T002: Scaffold AltImageUpdatePolicy API and controller
+[2026-05-02T11:12:41Z] CHANGED T002: Added api/v1alpha1 AltImageUpdatePolicy types and group registration, generated deepcopy and CRD manifests, added an internal/controller reconciler skeleton, registered the API scheme and controller with cmd/main.go, enabled CRD inclusion in config/default, and added a minimal sample manifest.
+[2026-05-02T11:12:41Z] VALIDATION T002: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make generate: passed; same environment make manifests: passed; same environment go test ./...: passed.
