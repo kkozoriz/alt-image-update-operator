@@ -13,6 +13,7 @@ import (
 	operatordeploy "alt-image-update-operator/internal/deploy"
 	operatorimage "alt-image-update-operator/internal/image"
 	"alt-image-update-operator/internal/jobs"
+	operatormetrics "alt-image-update-operator/internal/metrics"
 	"alt-image-update-operator/internal/run"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -514,6 +515,97 @@ func TestReconcileEmitsPipelineMilestoneEventsOnce(t *testing.T) {
 	if events := recordedEvents(t, reconciler); len(events) != 0 {
 		t.Fatalf("events after terminal current-run reconcile = %v, want none", events)
 	}
+}
+
+func TestReconcileRecordsBuildAndRolloutSuccessMetricsOnce(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	buildID := run.BuildID(policy)
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		rolledOutDeploymentForPolicy(policy, wantImage, buildID, 8),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+	metricRecorder := reconciler.Metrics.(*fakeMetricsRecorder)
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("first Reconcile returned error: %v", err)
+	}
+	assertMetricCalls(t, metricRecorder.buildResults, operatormetrics.ResultSucceeded)
+	assertMetricCalls(t, metricRecorder.rolloutResults, operatormetrics.ResultSucceeded)
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("second Reconcile returned error: %v", err)
+	}
+	assertMetricCalls(t, metricRecorder.buildResults, operatormetrics.ResultSucceeded)
+	assertMetricCalls(t, metricRecorder.rolloutResults, operatormetrics.ResultSucceeded)
+}
+
+func TestReconcileRecordsBuildAndRolloutFailureMetrics(t *testing.T) {
+	ctx := context.Background()
+
+	buildFailedPolicy := testPolicy()
+	buildFailedJob := testBuildJobForPolicy(t, buildFailedPolicy)
+	buildFailedJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobFailed,
+		Status: corev1.ConditionTrue,
+		Reason: "BackoffLimitExceeded",
+	}}
+	buildFailedReconciler := newTestReconciler(t,
+		buildFailedPolicy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildFailedJob,
+	)
+	buildFailedMetrics := buildFailedReconciler.Metrics.(*fakeMetricsRecorder)
+
+	if _, err := buildFailedReconciler.Reconcile(ctx, requestFor(buildFailedPolicy)); err != nil {
+		t.Fatalf("build failed Reconcile returned error: %v", err)
+	}
+	assertMetricCalls(t, buildFailedMetrics.buildResults, operatormetrics.ResultFailed)
+	assertMetricCalls(t, buildFailedMetrics.rolloutResults)
+
+	rolloutFailedPolicy := testPolicy()
+	rolloutFailedJob := testBuildJobForPolicy(t, rolloutFailedPolicy)
+	rolloutFailedJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	buildID := run.BuildID(rolloutFailedPolicy)
+	wantImage, err := operatorimage.BuildReference(rolloutFailedPolicy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	rolloutFailedDeployment := rolledOutDeploymentForPolicy(rolloutFailedPolicy, wantImage, buildID, 8)
+	rolloutFailedDeployment.Status.AvailableReplicas = 0
+	rolloutFailedDeployment.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type:   appsv1.DeploymentProgressing,
+		Status: corev1.ConditionFalse,
+		Reason: "ProgressDeadlineExceeded",
+	}}
+	rolloutFailedReconciler := newTestReconciler(t,
+		rolloutFailedPolicy,
+		rolloutFailedDeployment,
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		rolloutFailedJob,
+	)
+	rolloutFailedMetrics := rolloutFailedReconciler.Metrics.(*fakeMetricsRecorder)
+
+	if _, err := rolloutFailedReconciler.Reconcile(ctx, requestFor(rolloutFailedPolicy)); err != nil {
+		t.Fatalf("rollout failed Reconcile returned error: %v", err)
+	}
+	assertMetricCalls(t, rolloutFailedMetrics.buildResults, operatormetrics.ResultSucceeded)
+	assertMetricCalls(t, rolloutFailedMetrics.rolloutResults, operatormetrics.ResultFailed)
 }
 
 func TestReconcileCompletedCheckJobParserFailureSetsFailedStatus(t *testing.T) {
@@ -1447,7 +1539,21 @@ func newTestReconciler(t *testing.T, objects ...client.Object) *AltImageUpdatePo
 		Scheme:         scheme,
 		CheckLogReader: &fakeCheckJobLogReader{},
 		Recorder:       record.NewFakeRecorder(100),
+		Metrics:        &fakeMetricsRecorder{},
 	}
+}
+
+type fakeMetricsRecorder struct {
+	buildResults   []operatormetrics.Result
+	rolloutResults []operatormetrics.Result
+}
+
+func (r *fakeMetricsRecorder) RecordBuild(result operatormetrics.Result) {
+	r.buildResults = append(r.buildResults, result)
+}
+
+func (r *fakeMetricsRecorder) RecordRollout(result operatormetrics.Result) {
+	r.rolloutResults = append(r.rolloutResults, result)
 }
 
 type fakeCheckJobLogReader struct {
@@ -1824,6 +1930,14 @@ func assertEventReasons(t *testing.T, events []string, wantReasons ...string) {
 		if count := countEventsContaining(events, needle); count != 1 {
 			t.Fatalf("event reason %q count = %d, want 1 in events: %v", reason, count, events)
 		}
+	}
+}
+
+func assertMetricCalls(t *testing.T, got []operatormetrics.Result, want ...operatormetrics.Result) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metric calls = %v, want %v", got, want)
 	}
 }
 

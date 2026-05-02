@@ -896,7 +896,7 @@
     {
       "id": "T025",
       "title": "Add controller metrics",
-      "status": "queued",
+      "status": "done",
       "priority": 76,
       "dependencies": [
         "T019",
@@ -924,11 +924,12 @@
       ],
       "implementation_notes": "Keep label cardinality low. Do not use image references or policy names as Prometheus labels.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:35:39Z",
+      "completed_at": "2026-05-02T14:32:59Z",
+      "result_summary": "Added low-cardinality Prometheus build and rollout outcome metrics, registered them with controller-runtime metrics, recorded outcomes on status transitions, and added metrics/controller tests. Parent review reran validation after Ralph blocked on git index writes and committed the validated implementation.",
+      "validation_result": "Passed: gofmt -w internal/metrics/metrics.go internal/controller/altimageupdatepolicy_controller.go cmd/main.go internal/metrics/metrics_test.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/metrics ./internal/controller; same environment go test ./...; git diff --check."
     },
     {
       "id": "T026",

@@ -28,6 +28,7 @@ import (
 	"alt-image-update-operator/internal/deploy"
 	operatorimage "alt-image-update-operator/internal/image"
 	"alt-image-update-operator/internal/jobs"
+	operatormetrics "alt-image-update-operator/internal/metrics"
 	"alt-image-update-operator/internal/run"
 	operatorstatus "alt-image-update-operator/internal/status"
 	appsv1 "k8s.io/api/apps/v1"
@@ -93,6 +94,7 @@ type AltImageUpdatePolicyReconciler struct {
 	Scheme         *runtime.Scheme
 	CheckLogReader CheckJobLogReader
 	Recorder       record.EventRecorder
+	Metrics        operatormetrics.Recorder
 }
 
 // CheckJobLogReader reads container logs for a completed Check Job pod.
@@ -749,8 +751,31 @@ func (r *AltImageUpdatePolicyReconciler) updatePolicyStatus(ctx context.Context,
 	if err := r.Status().Update(ctx, policy); err != nil {
 		return err
 	}
+	r.recordStatusTransitionMetrics(policy, original)
 	r.emitStatusTransitionEvents(policy, original)
 	return nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) recordStatusTransitionMetrics(policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) {
+	if r.Metrics == nil || policy == nil {
+		return
+	}
+	if original == nil {
+		original = &securityv1alpha1.AltImageUpdatePolicyStatus{}
+	}
+
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue) {
+		r.Metrics.RecordBuild(operatormetrics.ResultSucceeded)
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse) {
+		r.Metrics.RecordBuild(operatormetrics.ResultFailed)
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionTrue) {
+		r.Metrics.RecordRollout(operatormetrics.ResultSucceeded)
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionFalse) {
+		r.Metrics.RecordRollout(operatormetrics.ResultFailed)
+	}
 }
 
 func (r *AltImageUpdatePolicyReconciler) emitStatusTransitionEvents(policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) {
@@ -883,6 +908,9 @@ func (r *AltImageUpdatePolicyReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	}
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor(eventRecorderName)
+	}
+	if r.Metrics == nil {
+		r.Metrics = operatormetrics.DefaultRecorder
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
