@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 READY_STATUSES = {"queued"}
 RETRYABLE_STATUSES = {"queued", "in_progress", "blocked", "failed"}
 TERMINAL_STATUSES = {"done", "blocked", "failed", "skipped"}
+FAILURE_STATUSES = {"blocked", "failed"}
 
 
 def utcnow() -> str:
@@ -298,7 +299,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
     parser.add_argument("--sleep", type=float, default=2.0, help="Seconds between iterations")
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means unlimited until no runnable tasks")
-    parser.add_argument("--stop-on-failure", action="store_true", help="Stop if Codex exits non-zero")
+    parser.add_argument("--stop-on-failure", action="store_true", help="Stop if Codex exits non-zero or the assigned task becomes blocked/failed")
     parser.add_argument("--retry-task", help="Reset a failed, blocked, in-progress, or queued task and run only that task")
     parser.add_argument("--reset-task", help="Reset a failed, blocked, in-progress, or queued task to queued and exit")
     parser.add_argument("--force", action="store_true", help="Allow --retry-task or --reset-task to reset a done or otherwise non-retryable task")
@@ -395,19 +396,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         last_message_path = ralph_dir / f"{log_prefix}_last.md"
 
         print(f"[ralph] running Codex for {task_id}: {title}")
-        rc = run_codex(
-            codex_bin=codex_path,
-            project_root=project_root,
-            model=args.model,
-            reasoning_effort=args.reasoning_effort,
-            sandbox=args.sandbox,
-            approval=args.approval,
-            prompt=prompt,
-            log_path=log_path,
-            last_message_path=last_message_path,
-            extra_args=list(args.extra_codex_arg or []),
-            stream_logs=not args.no_stream_logs,
-        )
+        try:
+            rc = run_codex(
+                codex_bin=codex_path,
+                project_root=project_root,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+                sandbox=args.sandbox,
+                approval=args.approval,
+                prompt=prompt,
+                log_path=log_path,
+                last_message_path=last_message_path,
+                extra_args=list(args.extra_codex_arg or []),
+                stream_logs=not args.no_stream_logs,
+            )
+        except KeyboardInterrupt:
+            reason = f"Ralph interrupted while running {task_id}; see {log_path}"
+            append_progress(progress_path, f"RALPH INTERRUPTED {task_id}: {reason}")
+            mark_task_failed_if_still_in_progress(tasks_path, task_id, worker_id, reason)
+            print(reason)
+            return 130
 
         if rc != 0:
             reason = f"Codex exited with code {rc}; see {log_path}"
@@ -417,16 +425,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(reason)
                 return rc
         else:
-            # If the agent did not close its own task, mark this as failed to avoid an infinite loop.
             data_after = load_json(tasks_path)
             task_after = get_task(data_after, task_id)
             if task_after and task_after.get("status") == "in_progress" and task_after.get("assigned_to") == worker_id:
+                # If the agent did not close its own task, mark this as failed to avoid an infinite loop.
                 reason = "Codex returned success but left the task in_progress; task marked failed by Ralph guard"
                 task_after["status"] = "failed"
                 task_after["completed_at"] = utcnow()
                 task_after["result_summary"] = reason
                 atomic_write_json(tasks_path, data_after)
                 append_progress(progress_path, f"RALPH GUARD_FAIL {task_id}: {reason}")
+                if args.stop_on_failure:
+                    print(reason)
+                    return 1
+            elif task_after and str(task_after.get("status")) in FAILURE_STATUSES and args.stop_on_failure:
+                reason = f"Task {task_id} ended with status={task_after.get('status')}; see {log_path}"
+                append_progress(progress_path, f"RALPH TASK_FAILURE {task_id}: {reason}")
+                print(reason)
+                return 1
 
         time.sleep(max(0.0, args.sleep))
 

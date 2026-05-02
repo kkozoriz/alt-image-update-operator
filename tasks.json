@@ -268,7 +268,7 @@
     {
       "id": "T008",
       "title": "Implement ALT apt simulation log parser",
-      "status": "queued",
+      "status": "done",
       "priority": 93,
       "dependencies": [
         "T003"
@@ -293,16 +293,17 @@
       ],
       "implementation_notes": "Keep the MVP parser simple and conservative. Do not claim security-only detection; PRD says MVP only detects available package changes.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-14799",
+      "started_at": "2026-05-02T12:00:19Z",
+      "completed_at": "2026-05-02T12:29:39Z",
+      "result_summary": "Added pure ALT apt simulation log parser and focused unit tests. Reviewed after Ralph blocked on git index writes, reran package and full test suite, and committed the validated implementation.",
+      "validation_result": "Passed: gofmt -w internal/check/parser.go internal/check/parser_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/check; same environment go test ./..."
     },
     {
       "id": "T009",
       "title": "Implement Job names labels and annotations helpers",
-      "status": "queued",
+      "status": "done",
       "priority": 92,
       "dependencies": [
         "T006"
@@ -327,11 +328,12 @@
       ],
       "implementation_notes": "Use stable hashing for long names. Labels must not contain registry credentials or secret values.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-14799",
+      "started_at": "2026-05-02T12:06:40Z",
+      "completed_at": "2026-05-02T12:29:39Z",
+      "result_summary": "Added deterministic Check/Build Job names, Kubernetes-safe labels, exact annotations, lookup labels, and tests. Reviewed after Ralph blocked on git index writes, reran package and full test suite, and committed the validated implementation.",
+      "validation_result": "Passed: gofmt -w internal/jobs/names.go internal/jobs/names_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/jobs; same environment go test ./..."
     },
     {
       "id": "T010",
@@ -408,7 +410,7 @@
     {
       "id": "T012",
       "title": "Implement idempotent Deployment image patch helper",
-      "status": "queued",
+      "status": "done",
       "priority": 89,
       "dependencies": [
         "T003",
@@ -435,11 +437,12 @@
       ],
       "implementation_notes": "Do not mutate unrelated initContainers or sidecars. Preserve existing pod template annotations.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-14799",
+      "started_at": "2026-05-02T12:13:48Z",
+      "completed_at": "2026-05-02T12:29:39Z",
+      "result_summary": "Added idempotent Deployment image patch helper and unit tests. Reviewed after Ralph blocked on git index writes, reran package and full test suite, and committed the validated implementation.",
+      "validation_result": "Passed: gofmt -w internal/deploy/patch.go internal/deploy/patch_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/deploy; same environment go test ./..."
     },
     {
       "id": "T013",
@@ -1057,7 +1060,7 @@
     {
       "id": "T030",
       "title": "Create real demo Deployment and ConfigMap build context",
-      "status": "queued",
+      "status": "done",
       "priority": 71,
       "dependencies": [
         "T003",
@@ -1088,11 +1091,12 @@
       ],
       "implementation_notes": "Keep ConfigMap context small enough for Kubernetes limits. Make image names easy to override for local registry setups.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-14799",
+      "started_at": "2026-05-02T12:18:58Z",
+      "completed_at": "2026-05-02T12:29:39Z",
+      "result_summary": "Added real demo namespace, Deployment, ConfigMap build context, e2e manifests, and aligned demo policies with the demo namespace. Parent review verified the allowed remote minikube kubeconfig and completed required kubectl client dry-runs before commit.",
+      "validation_result": "Passed: Ruby YAML parse for config/demo/namespace.yaml, config/demo/deployment.yaml, config/demo/context-configmap.yaml, config/demo/policy-always.yaml, config/demo/policy-alt-apt-simulation.yaml, test/e2e/manifests/deployment.yaml, test/e2e/manifests/context-configmap.yaml, and test/e2e/manifests/policy-always.yaml; grep confirmed no status/fake markers in demo manifests; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./...; kubectl --kubeconfig /Users/konstantin/.kube-remote/minikube-config get nodes; kubectl --kubeconfig /Users/konstantin/.kube-remote/minikube-config apply --dry-run=client for config/demo/namespace.yaml, config/demo/deployment.yaml, config/demo/context-configmap.yaml, config/demo/policy-always.yaml, config/demo/policy-alt-apt-simulation.yaml, and test/e2e/manifests/policy-always.yaml."
     },
     {
       "id": "T031",
@@ -1122,11 +1126,11 @@
       ],
       "implementation_notes": "Do not hide setup failures. If Docker, kind, or network access is unavailable, record the exact blocker in progress.txt.",
       "risk": "high",
-      "attempts": 1,
+      "attempts": 3,
       "assigned_to": null,
       "started_at": null,
       "completed_at": null,
-      "result_summary": "Reset to queued after Ralph assigned this out of order because priority sorting preferred lower numbers. Existing uncommitted script files may be reused when T031 is reached in the intended order."
+      "result_summary": "Reset to queued after manual interruption before implementation. Ralph was patched to stop on blocked/failed task status before this task is retried."
     },
     {
       "id": "T032",
