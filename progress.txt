@@ -57,3 +57,9 @@
 [2026-05-02T11:49:16Z] BLOCKED T005: Required git commit could not be created because git add failed with "Unable to create '/Users/konstantin/GolandProjects/alt-image-update-operator/.git/index.lock': Operation not permitted". Implementation and validation passed, but task status is blocked until git index writes are allowed and the T005 files can be committed.
 [2026-05-02T11:49:51Z] RALPH STOP max_iterations=1
 [2026-05-02T11:51:18Z] DONE T005: Reviewed status helpers, reran gofmt, go test ./internal/status, and go test ./... successfully, then converted the task from blocked to done for commit.
+[2026-05-02T11:53:18Z] RALPH START worker_id=ralph-14799 model=gpt-5.5 reasoning_effort=high
+[2026-05-02T11:53:18Z] RALPH ASSIGN T006: Implement deterministic run key and build id helpers
+[2026-05-02T11:53:47Z] START T006: Implement deterministic run key and build id helpers
+[2026-05-02T11:55:39Z] CHANGED T006: Added internal/run/build_id.go with stable run input extraction from AltImageUpdatePolicy generation/spec, sha256 run key generation, and compact tag-safe build IDs. Added internal/run/build_id_test.go covering stable reconciles, generation-only retrigger, manualToken retrigger, status-insensitive behavior, and target/context/output image identity changes.
+[2026-05-02T11:55:39Z] VALIDATION T006: gofmt -w internal/run/build_id.go internal/run/build_id_test.go: passed; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/run: passed; same environment go test ./...: passed.
+[2026-05-02T11:55:39Z] DONE T006: Deterministic run key and build id helper package is implemented, validated, and ready for the required commit.

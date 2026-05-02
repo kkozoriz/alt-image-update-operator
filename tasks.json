@@ -196,7 +196,7 @@
     {
       "id": "T006",
       "title": "Implement deterministic run key and build id helpers",
-      "status": "queued",
+      "status": "done",
       "priority": 95,
       "dependencies": [
         "T003"
@@ -221,11 +221,12 @@
       ],
       "implementation_notes": "This helper is central to idempotency. Avoid wall-clock time as an input except where a tag explicitly needs a recorded build start timestamp chosen once by the controller.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-14799",
+      "started_at": "2026-05-02T11:53:18Z",
+      "completed_at": "2026-05-02T11:55:39Z",
+      "result_summary": "Added pure internal/run helpers that derive stable run inputs from AltImageUpdatePolicy generation/spec, compute a deterministic sha256 run key, and produce a compact tag-safe build id. Added tests covering stable reconciles, generation-only retrigger, manualToken retrigger, status-insensitive behavior, and changes to target/context/output image identity inputs.",
+      "validation_result": "Passed: gofmt -w internal/run/build_id.go internal/run/build_id_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/run; same environment go test ./..."
     },
     {
       "id": "T007",
