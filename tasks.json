@@ -231,7 +231,7 @@
     {
       "id": "T007",
       "title": "Implement image reference and tag helpers",
-      "status": "queued",
+      "status": "done",
       "priority": 94,
       "dependencies": [
         "T003",
@@ -258,11 +258,12 @@
       ],
       "implementation_notes": "Prefer a proven container image reference parser from an existing dependency if available; do not parse complex image references with fragile string splits.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-14799",
+      "started_at": "2026-05-02T11:56:20Z",
+      "completed_at": "2026-05-02T11:59:29Z",
+      "result_summary": "Added pure internal/image helpers that parse and validate output image references with github.com/distribution/reference, reject empty/invalid/digest destinations, validate deterministic build ids as image tags, and construct pushed build image references by replacing any existing tag while preserving registry ports and nested repository paths. Added focused unit tests for explicit tags, missing tags, registry ports, nested repositories, repository extraction, invalid output references, and invalid build ids.",
+      "validation_result": "Passed: gofmt -w internal/image/reference.go internal/image/tag.go internal/image/tag_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/image; same environment go test ./.... Non-required go mod tidy was attempted but cannot complete in this sandbox because it tries to write missing module lock files under /Users/konstantin/go/pkg/mod/cache/download, which is outside the writable roots."
     },
     {
       "id": "T008",
