@@ -599,7 +599,7 @@
     {
       "id": "T017",
       "title": "Observe Build Job terminal states",
-      "status": "queued",
+      "status": "done",
       "priority": 84,
       "dependencies": [
         "T016"
@@ -624,11 +624,12 @@
       ],
       "implementation_notes": "Use Kubernetes Job conditions rather than pod log text for build success. Do not inspect or expose registry credentials.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:55:46Z",
+      "completed_at": "2026-05-02T12:58:59Z",
+      "result_summary": "Extended Always-mode reconcile to observe existing Build Job terminal state from Kubernetes Job conditions. Running Jobs keep phase Building and requeue after 5s, completed Jobs record lastBuiltImage and lastBuildCompletionTime and move status to Applying with BuildCompleted/ImagePublished=True, and failed Jobs set phase Failed with reason BuildJobFailed plus useful condition-derived message. Added controller tests covering running, completed, failed, and restart recovery through an existing Job.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller; same environment go test ./..."
     },
     {
       "id": "T018",

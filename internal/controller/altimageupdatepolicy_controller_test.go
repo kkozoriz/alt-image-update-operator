@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
 	operatorimage "alt-image-update-operator/internal/image"
@@ -128,6 +129,150 @@ func TestReconcileAlwaysCreatesOneBuildJobAndBuildingStatus(t *testing.T) {
 	}
 	if updated.Status.LastBuildStartTime == nil {
 		t.Fatalf("LastBuildStartTime is nil, want build start timestamp")
+	}
+}
+
+func TestReconcileRunningBuildJobKeepsBuildingAndRequeues(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Active = 1
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.RequeueAfter != 5*time.Second {
+		t.Fatalf("RequeueAfter = %s, want 5s", result.RequeueAfter)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseBuilding {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseBuilding)
+	}
+	if updated.Status.Reason != reasonBuildJobRunning {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonBuildJobRunning)
+	}
+	if updated.Status.LastBuildJobName != buildJob.Name {
+		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJob.Name)
+	}
+	if updated.Status.LastBuiltImage != "" {
+		t.Fatalf("LastBuiltImage = %q, want empty while build is running", updated.Status.LastBuiltImage)
+	}
+}
+
+func TestReconcileCompletedBuildJobRecordsBuiltImageAndNextStage(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:    batchv1.JobComplete,
+			Status:  corev1.ConditionTrue,
+			Reason:  "CompletionsReached",
+			Message: "Job completed",
+		},
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after recording completed build", result)
+	}
+
+	buildID := run.BuildID(policy)
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseApplying {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseApplying)
+	}
+	if updated.Status.Reason != reasonBuildJobCompleted {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonBuildJobCompleted)
+	}
+	if updated.Status.LastBuildJobName != buildJob.Name {
+		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJob.Name)
+	}
+	if updated.Status.LastBuiltImage != wantImage {
+		t.Fatalf("LastBuiltImage = %q, want %q", updated.Status.LastBuiltImage, wantImage)
+	}
+	if updated.Status.LastBuildCompletionTime == nil {
+		t.Fatalf("LastBuildCompletionTime is nil, want completion timestamp")
+	}
+
+	buildCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionBuildCompleted)
+	if buildCompleted == nil || buildCompleted.Status != metav1.ConditionTrue {
+		t.Fatalf("BuildCompleted condition = %#v, want True", buildCompleted)
+	}
+	imagePublished := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionImagePublished)
+	if imagePublished == nil || imagePublished.Status != metav1.ConditionTrue {
+		t.Fatalf("ImagePublished condition = %#v, want True", imagePublished)
+	}
+}
+
+func TestReconcileFailedBuildJobSetsFailedStatus(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:    batchv1.JobFailed,
+			Status:  corev1.ConditionTrue,
+			Reason:  "BackoffLimitExceeded",
+			Message: "Job has reached the specified backoff limit",
+		},
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != reasonBuildJobFailed {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonBuildJobFailed)
+	}
+	if updated.Status.LastBuildJobName != buildJob.Name {
+		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJob.Name)
+	}
+	if updated.Status.LastBuiltImage != "" {
+		t.Fatalf("LastBuiltImage = %q, want empty after failed build", updated.Status.LastBuiltImage)
+	}
+	if updated.Status.Message == "" || !containsString([]string{updated.Status.Message}, `Build Job "`+buildJob.Name+`" failed: BackoffLimitExceeded: Job has reached the specified backoff limit`) {
+		t.Fatalf("Message = %q, want useful failed Job message", updated.Status.Message)
+	}
+
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionTrue {
+		t.Fatalf("Failed condition = %#v, want True", failed)
+	}
+	buildCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionBuildCompleted)
+	if buildCompleted == nil || buildCompleted.Status != metav1.ConditionFalse {
+		t.Fatalf("BuildCompleted condition = %#v, want False", buildCompleted)
 	}
 }
 
@@ -306,6 +451,25 @@ func testConfigMap(name string, data map[string]string) *corev1.ConfigMap {
 		},
 		Data: data,
 	}
+}
+
+func testBuildJobForPolicy(t *testing.T, policy *securityv1alpha1.AltImageUpdatePolicy) *batchv1.Job {
+	t.Helper()
+
+	buildID := run.BuildID(policy)
+	builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	buildJob, err := jobs.NewBuildJob(policy, jobs.BuildJobOptions{
+		RunKey:     run.RunKey(policy),
+		BuildID:    buildID,
+		BuiltImage: builtImage,
+	})
+	if err != nil {
+		t.Fatalf("NewBuildJob returned error: %v", err)
+	}
+	return buildJob
 }
 
 func requestFor(policy *securityv1alpha1.AltImageUpdatePolicy) ctrl.Request {

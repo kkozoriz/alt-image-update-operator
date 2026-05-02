@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
 	operatorimage "alt-image-update-operator/internal/image"
@@ -46,6 +47,11 @@ const (
 	reasonDockerfileKeyNotFound    = "DockerfileKeyNotFound"
 	reasonBuildImageInvalid        = "BuildImageInvalid"
 	reasonBuildJobEnsured          = "BuildJobEnsured"
+	reasonBuildJobRunning          = "BuildJobRunning"
+	reasonBuildJobCompleted        = "BuildJobCompleted"
+	reasonBuildJobFailed           = "BuildJobFailed"
+
+	buildJobRequeueAfter = 5 * time.Second
 )
 
 // AltImageUpdatePolicyReconciler reconciles an AltImageUpdatePolicy object.
@@ -137,18 +143,52 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 			return ctrl.Result{}, err
 		}
 
-		message := fmt.Sprintf("Build Job %q is present for image %q", buildJob.Name, builtImage)
-		operatorstatus.MarkBuilding(&policy.Status, policy.Generation, now, reasonBuildJobEnsured, message)
 		policy.Status.LastBuildJobName = buildJob.Name
-		if policy.Status.LastBuildStartTime == nil || policy.Status.LastBuildJobName != originalStatus.LastBuildJobName {
+		if policy.Status.LastBuildStartTime == nil || originalStatus.LastBuildJobName != buildJob.Name {
 			policy.Status.LastBuildStartTime = &now
 		}
+
+		if complete := findJobCondition(buildJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
+			message := fmt.Sprintf("Build Job %q completed and published image %q", buildJob.Name, builtImage)
+			operatorstatus.MarkApplying(&policy.Status, policy.Generation, now, reasonBuildJobCompleted, message)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, message, now)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, message, now)
+			policy.Status.LastBuiltImage = builtImage
+			if policy.Status.LastBuildCompletionTime == nil || originalStatus.LastBuiltImage != builtImage || originalStatus.LastBuildJobName != buildJob.Name {
+				policy.Status.LastBuildCompletionTime = &now
+			}
+			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			logger.V(1).Info("AltImageUpdatePolicy build Job completed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
+			return ctrl.Result{}, nil
+		}
+
+		if failed := findJobCondition(buildJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
+			message := jobFailureMessage(buildJob, failed)
+			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildJobFailed, message)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
+			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			logger.V(1).Info("AltImageUpdatePolicy build Job failed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
+			return ctrl.Result{}, nil
+		}
+
+		message := fmt.Sprintf("Build Job %q is present for image %q", buildJob.Name, builtImage)
+		if buildJob.Status.Active > 0 {
+			message = fmt.Sprintf("Build Job %q is running for image %q", buildJob.Name, builtImage)
+		}
+		operatorstatus.MarkBuilding(&policy.Status, policy.Generation, now, reasonBuildJobRunning, message)
 		if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
 			return ctrl.Result{}, err
 		}
 
 		logger.V(1).Info("AltImageUpdatePolicy build Job ensured", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: buildJobRequeueAfter}, nil
 	}
 
 	successMessage := "Policy preflight checks completed"
@@ -201,6 +241,36 @@ func (r *AltImageUpdatePolicyReconciler) ensureBuildJob(ctx context.Context, pol
 	}
 
 	return &existing, nil
+}
+
+func findJobCondition(job *batchv1.Job, conditionType batchv1.JobConditionType) *batchv1.JobCondition {
+	if job == nil {
+		return nil
+	}
+	for i := range job.Status.Conditions {
+		if job.Status.Conditions[i].Type == conditionType {
+			return &job.Status.Conditions[i]
+		}
+	}
+	return nil
+}
+
+func jobFailureMessage(job *batchv1.Job, condition *batchv1.JobCondition) string {
+	if job == nil {
+		return "Build Job failed"
+	}
+
+	message := fmt.Sprintf("Build Job %q failed", job.Name)
+	if condition == nil {
+		return message
+	}
+	if condition.Reason != "" {
+		message += ": " + condition.Reason
+	}
+	if condition.Message != "" {
+		message += ": " + condition.Message
+	}
+	return message
 }
 
 func (r *AltImageUpdatePolicyReconciler) updatePolicyStatus(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) error {
