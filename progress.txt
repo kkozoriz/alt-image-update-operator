@@ -19,3 +19,4 @@
 [2026-05-02T11:02:14Z] RALPH TOOLING_FIX: fixed Ralph priority ordering so higher task priority numbers run first. Reset T031 to queued because it was assigned out of order before T002; left the generated uncommitted scripts in place for reuse when T031 is reached intentionally.
 [2026-05-02T11:04:07Z] WORKER_PROMPT_FIX: tightened prompts/03_worker_prompt.md so tasks are not marked done unless required validation and the required git commit succeed.
 [2026-05-02T11:06:18Z] RALPH TOOLING_IMPROVEMENT: added --reasoning-effort to tools/ralph.py and defaulted worker runs to high reasoning effort.
+[2026-05-02T11:08:30Z] RALPH TOOLING_IMPROVEMENT: added --reset-task and --retry-task to tools/ralph.py so failed or blocked tasks can be resumed intentionally.

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 READY_STATUSES = {"queued"}
+RETRYABLE_STATUSES = {"queued", "in_progress", "blocked", "failed"}
 TERMINAL_STATUSES = {"done", "blocked", "failed", "skipped"}
 
 
@@ -117,6 +118,51 @@ def claim_next_task(data: Dict[str, Any], worker_id: str) -> Optional[Dict[str, 
     task["completed_at"] = None
     task["result_summary"] = None
     task["attempts"] = int(task.get("attempts") or 0) + 1
+    return task
+
+
+def claim_specific_task(data: Dict[str, Any], task_id: str, worker_id: str) -> Optional[Dict[str, Any]]:
+    task = get_task(data, task_id)
+    if not task:
+        raise SystemExit(f"task not found: {task_id}")
+    by_id = task_map(t for t in data.get("tasks", []) if isinstance(t, dict))
+    if task.get("status") not in READY_STATUSES:
+        return None
+    if not deps_done(task, by_id):
+        waiting = [
+            str(dep)
+            for dep in task.get("dependencies", [])
+            if by_id.get(str(dep), {}).get("status") != "done"
+        ]
+        raise SystemExit(f"task {task_id} dependencies are not done: {', '.join(waiting)}")
+
+    task["status"] = "in_progress"
+    task["assigned_to"] = worker_id
+    task["started_at"] = utcnow()
+    task["completed_at"] = None
+    task["result_summary"] = None
+    task["validation_result"] = None
+    task["attempts"] = int(task.get("attempts") or 0) + 1
+    return task
+
+
+def reset_task_for_retry(data: Dict[str, Any], task_id: str, *, force: bool = False) -> Dict[str, Any]:
+    task = get_task(data, task_id)
+    if not task:
+        raise SystemExit(f"task not found: {task_id}")
+
+    status = str(task.get("status"))
+    if status == "done" and not force:
+        raise SystemExit(f"task {task_id} is done; use --force to reset a done task")
+    if status not in RETRYABLE_STATUSES and not force:
+        raise SystemExit(f"task {task_id} has status {status!r}; use --force to reset it")
+
+    task["status"] = "queued"
+    task["assigned_to"] = None
+    task["started_at"] = None
+    task["completed_at"] = None
+    task["result_summary"] = None
+    task["validation_result"] = None
     return task
 
 
@@ -245,6 +291,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--sleep", type=float, default=2.0, help="Seconds between iterations")
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means unlimited until no runnable tasks")
     parser.add_argument("--stop-on-failure", action="store_true", help="Stop if Codex exits non-zero")
+    parser.add_argument("--retry-task", help="Reset a failed, blocked, in-progress, or queued task and run only that task")
+    parser.add_argument("--reset-task", help="Reset a failed, blocked, in-progress, or queued task to queued and exit")
+    parser.add_argument("--force", action="store_true", help="Allow --retry-task or --reset-task to reset a done or otherwise non-retryable task")
     parser.add_argument("--extra-codex-arg", action="append", default=[], help="Extra argument passed to codex exec; repeatable")
     parser.add_argument("--no-stream-logs", action="store_true", help="Do not stream Codex output to the terminal; only write .ralph logs")
     return parser.parse_args(argv)
@@ -272,6 +321,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not worker_prompt_path.exists():
         eprint(f"worker prompt not found: {worker_prompt_path}")
         return 2
+
+    if args.retry_task and args.reset_task:
+        eprint("--retry-task and --reset-task are mutually exclusive")
+        return 2
+
+    if args.retry_task or args.reset_task:
+        retry_id = str(args.retry_task or args.reset_task)
+        data = load_json(tasks_path)
+        task = reset_task_for_retry(data, retry_id, force=args.force)
+        atomic_write_json(tasks_path, data)
+        append_progress(progress_path, f"RALPH RESET {retry_id}: status=queued previous task reset for retry")
+        print(f"Reset {retry_id} to queued")
+        if args.reset_task:
+            return 0
+        args.max_iterations = 1
 
     worker_prompt = worker_prompt_path.read_text(encoding="utf-8")
     ralph_dir = project_root / ".ralph"
@@ -302,7 +366,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("No runnable queued tasks. Some tasks may be blocked, failed, or waiting for dependencies.")
             return 0
 
-        task = claim_next_task(data, worker_id)
+        if args.retry_task:
+            task = claim_specific_task(data, str(args.retry_task), worker_id)
+        else:
+            task = claim_next_task(data, worker_id)
         if task is None:
             append_progress(progress_path, f"RALPH STOP no claimable task pool={counts}")
             print("No claimable task.")
