@@ -24,7 +24,7 @@ import (
 
 const testNamespace = "default"
 
-func TestReconcilePreflightSuccessUpdatesObservedGenerationAndRunIdentity(t *testing.T) {
+func TestReconcileAltAptSimulationCreatesOneCheckJobAndCheckingStatus(t *testing.T) {
 	ctx := context.Background()
 	policy := testPolicy()
 	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
@@ -35,7 +35,41 @@ func TestReconcilePreflightSuccessUpdatesObservedGenerationAndRunIdentity(t *tes
 	)
 
 	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
-		t.Fatalf("Reconcile returned error: %v", err)
+		t.Fatalf("first Reconcile returned error: %v", err)
+	}
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("second Reconcile returned error: %v", err)
+	}
+
+	jobList := listJobs(t, ctx, reconciler.Client)
+	if len(jobList.Items) != 1 {
+		t.Fatalf("Jobs len = %d, want exactly one Check Job", len(jobList.Items))
+	}
+
+	checkJob := jobList.Items[0]
+	buildID := run.BuildID(policy)
+	wantJobName := jobs.CheckJobName(policy.Name, buildID)
+	if checkJob.Name != wantJobName {
+		t.Fatalf("check Job name = %q, want %q", checkJob.Name, wantJobName)
+	}
+	if checkJob.Labels[jobs.LabelJobType] != string(jobs.JobTypeCheck) {
+		t.Fatalf("job type label = %q, want %q", checkJob.Labels[jobs.LabelJobType], jobs.JobTypeCheck)
+	}
+	if checkJob.Annotations[jobs.AnnotationRunKey] != run.RunKey(policy) {
+		t.Fatalf("run key annotation = %q, want %q", checkJob.Annotations[jobs.AnnotationRunKey], run.RunKey(policy))
+	}
+	if len(checkJob.OwnerReferences) != 1 {
+		t.Fatalf("ownerReferences len = %d, want 1", len(checkJob.OwnerReferences))
+	}
+	if len(checkJob.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("check Job containers len = %d, want 1", len(checkJob.Spec.Template.Spec.Containers))
+	}
+	container := checkJob.Spec.Template.Spec.Containers[0]
+	if container.Name != jobs.CheckContainerName {
+		t.Fatalf("check container name = %q, want %q", container.Name, jobs.CheckContainerName)
+	}
+	if container.Image != policy.Spec.Alt.BaseImage {
+		t.Fatalf("check container image = %q, want %q", container.Image, policy.Spec.Alt.BaseImage)
 	}
 
 	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
@@ -48,11 +82,20 @@ func TestReconcilePreflightSuccessUpdatesObservedGenerationAndRunIdentity(t *tes
 	if updated.Status.BuildID != run.BuildID(policy) {
 		t.Fatalf("BuildID = %q, want %q", updated.Status.BuildID, run.BuildID(policy))
 	}
-	if updated.Status.Phase != securityv1alpha1.PolicyPhasePending {
-		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhasePending)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseChecking {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseChecking)
 	}
-	if updated.Status.Reason != reasonPreflightSucceeded {
-		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonPreflightSucceeded)
+	if updated.Status.Reason != reasonCheckJobRunning {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonCheckJobRunning)
+	}
+	if updated.Status.LastCheckJobName != wantJobName {
+		t.Fatalf("LastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, wantJobName)
+	}
+	if updated.Status.LastCheckTime != nil {
+		t.Fatalf("LastCheckTime = %v, want nil while check is running", updated.Status.LastCheckTime)
+	}
+	if updated.Status.LastBuildJobName != "" {
+		t.Fatalf("LastBuildJobName = %q, want empty before check result is parsed", updated.Status.LastBuildJobName)
 	}
 	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
 	if failed == nil {
@@ -60,6 +103,109 @@ func TestReconcilePreflightSuccessUpdatesObservedGenerationAndRunIdentity(t *tes
 	}
 	if failed.Status != metav1.ConditionFalse {
 		t.Fatalf("Failed condition status = %q, want %q", failed.Status, metav1.ConditionFalse)
+	}
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionUnknown {
+		t.Fatalf("CheckCompleted condition = %#v, want Unknown while check is running", checkCompleted)
+	}
+}
+
+func TestReconcileRunningCheckJobKeepsCheckingAndRequeues(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	checkJob := testCheckJobForPolicy(t, policy)
+	checkJob.Status.Active = 1
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		checkJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.RequeueAfter != checkJobRequeueAfter {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, checkJobRequeueAfter)
+	}
+
+	jobList := listJobs(t, ctx, reconciler.Client)
+	if len(jobList.Items) != 1 {
+		t.Fatalf("Jobs len = %d, want existing Check Job only", len(jobList.Items))
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseChecking {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseChecking)
+	}
+	if updated.Status.Reason != reasonCheckJobRunning {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonCheckJobRunning)
+	}
+	if updated.Status.LastCheckJobName != checkJob.Name {
+		t.Fatalf("LastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, checkJob.Name)
+	}
+	if updated.Status.LastBuildJobName != "" {
+		t.Fatalf("LastBuildJobName = %q, want empty while check is running", updated.Status.LastBuildJobName)
+	}
+}
+
+func TestReconcileFailedCheckJobSetsFailedStatus(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	checkJob := testCheckJobForPolicy(t, policy)
+	checkJob.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:    batchv1.JobFailed,
+			Status:  corev1.ConditionTrue,
+			Reason:  "BackoffLimitExceeded",
+			Message: "Job has reached the specified backoff limit",
+		},
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		checkJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after failed check", result)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != reasonCheckJobFailed {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonCheckJobFailed)
+	}
+	if updated.Status.LastCheckJobName != checkJob.Name {
+		t.Fatalf("LastCheckJobName = %q, want %q", updated.Status.LastCheckJobName, checkJob.Name)
+	}
+	if updated.Status.LastCheckTime == nil {
+		t.Fatalf("LastCheckTime is nil, want terminal check timestamp")
+	}
+	if updated.Status.LastBuildJobName != "" {
+		t.Fatalf("LastBuildJobName = %q, want empty after failed check", updated.Status.LastBuildJobName)
+	}
+	if updated.Status.Message == "" || !containsString([]string{updated.Status.Message}, `Check Job "`+checkJob.Name+`" failed: BackoffLimitExceeded: Job has reached the specified backoff limit`) {
+		t.Fatalf("Message = %q, want useful failed Check Job message", updated.Status.Message)
+	}
+
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionTrue {
+		t.Fatalf("Failed condition = %#v, want True", failed)
+	}
+	checkCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionCheckCompleted)
+	if checkCompleted == nil || checkCompleted.Status != metav1.ConditionFalse {
+		t.Fatalf("CheckCompleted condition = %#v, want False", checkCompleted)
 	}
 }
 
@@ -862,6 +1008,19 @@ func testBuildJobForPolicy(t *testing.T, policy *securityv1alpha1.AltImageUpdate
 		t.Fatalf("NewBuildJob returned error: %v", err)
 	}
 	return buildJob
+}
+
+func testCheckJobForPolicy(t *testing.T, policy *securityv1alpha1.AltImageUpdatePolicy) *batchv1.Job {
+	t.Helper()
+
+	checkJob, err := jobs.NewCheckJob(policy, jobs.CheckJobOptions{
+		RunKey:  run.RunKey(policy),
+		BuildID: run.BuildID(policy),
+	})
+	if err != nil {
+		t.Fatalf("NewCheckJob returned error: %v", err)
+	}
+	return checkJob
 }
 
 func markPolicySucceededForCurrentRun(t *testing.T, policy *securityv1alpha1.AltImageUpdatePolicy, targetDeploymentGeneration int64) string {

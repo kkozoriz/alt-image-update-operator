@@ -746,7 +746,7 @@
     {
       "id": "T021",
       "title": "Create and observe AltAptSimulation Check Job",
-      "status": "queued",
+      "status": "done",
       "priority": 80,
       "dependencies": [
         "T008",
@@ -773,11 +773,12 @@
       ],
       "implementation_notes": "The Check Job is a real Kubernetes Job. Do not run apt commands inside the controller process.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:13:34Z",
+      "completed_at": "2026-05-02T13:16:27Z",
+      "result_summary": "Reconcile now creates or finds the deterministic AltAptSimulation Check Job for the current run, records LastCheckJobName, sets Checking with requeue while the Job is non-terminal, records CheckCompleted on successful terminal state, and sets Failed with reason CheckJobFailed on failed terminal state. Added controller tests for duplicate prevention, running check status/requeue, and failed check status.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller; same environment go test ./..."
     },
     {
       "id": "T022",
