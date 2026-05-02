@@ -101,3 +101,9 @@
 [2026-05-02T12:29:39Z] DONE T030: Demo Deployment and ConfigMap build context manifests were committed after remote-minikube dry-run validation.
 [2026-05-02T12:29:39Z] RALPH RESET T031: status=queued after manual interruption before implementation.
 [2026-05-02T12:29:39Z] RALPH PATCH: Ralph now stops with --stop-on-failure when the assigned task ends as blocked or failed, and records manual KeyboardInterrupt without a traceback.
+[2026-05-02T12:31:41Z] RALPH START worker_id=ralph-31475 model=gpt-5.5 reasoning_effort=high
+[2026-05-02T12:31:41Z] RALPH ASSIGN T010: Implement Kaniko Build Job factory
+[2026-05-02T12:32:20Z] START T010: Implement Kaniko Build Job factory
+[2026-05-02T12:36:16Z] CHANGED T010: Added internal/jobs/build_job.go and internal/jobs/build_job_test.go. The factory creates a real Kaniko Job with policy ownerReference, deterministic labels/annotations, ConfigMap /workspace mount, Kaniko context/dockerfile/destination/digest/build-arg args, optional registry docker config Secret mount, PRD job/resource/service account defaults, and input validation.
+[2026-05-02T12:36:16Z] VALIDATION T010: gofmt -w internal/jobs/build_job.go internal/jobs/build_job_test.go: passed; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/jobs: passed; same environment go test ./...: passed.
+[2026-05-02T12:36:16Z] DONE T010: Kaniko Build Job factory is implemented and validated; preparing required git commit.

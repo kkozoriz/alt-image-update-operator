@@ -338,7 +338,7 @@
     {
       "id": "T010",
       "title": "Implement Kaniko Build Job factory",
-      "status": "queued",
+      "status": "done",
       "priority": 91,
       "dependencies": [
         "T003",
@@ -366,11 +366,12 @@
       ],
       "implementation_notes": "Default builder image should match the PRD or API default. Keep privileged mode and Docker socket mounts out of the Job.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:31:41Z",
+      "completed_at": "2026-05-02T12:36:16Z",
+      "result_summary": "Implemented the Kaniko Build Job factory with deterministic Job metadata, ownerReference to AltImageUpdatePolicy, ConfigMap workspace mount at /workspace, Kaniko executor args for context/dockerfile/destination/digest/build args, optional docker config Secret mount, PRD defaults for builder image/job limits/resources/service account, and validation errors for unsupported or incomplete inputs.",
+      "validation_result": "Passed: gofmt -w internal/jobs/build_job.go internal/jobs/build_job_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/jobs; same environment go test ./..."
     },
     {
       "id": "T011",
