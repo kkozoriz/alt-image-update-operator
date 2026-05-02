@@ -376,7 +376,7 @@
     {
       "id": "T011",
       "title": "Implement AltAptSimulation Check Job factory",
-      "status": "queued",
+      "status": "done",
       "priority": 90,
       "dependencies": [
         "T003",
@@ -402,11 +402,12 @@
       ],
       "implementation_notes": "The check must be a real Kubernetes Job. Do not replace it with local process execution inside the controller.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:37:06Z",
+      "completed_at": "2026-05-02T12:39:59Z",
+      "result_summary": "Implemented the AltAptSimulation Check Job factory with deterministic Job metadata, ownerReference to AltImageUpdatePolicy, configured ALT base image, real apt-get update and apt-get -s dist-upgrade shell command, shared job template defaults, conservative pod/container security context, resource defaults, and validation errors for unsupported or incomplete inputs.",
+      "validation_result": "Passed: gofmt -w internal/jobs/check_job.go internal/jobs/check_job_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/jobs; same environment go test ./..."
     },
     {
       "id": "T012",
