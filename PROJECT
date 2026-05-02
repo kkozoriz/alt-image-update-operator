@@ -1,0 +1,7 @@
+domain: altlinux.org
+layout:
+- go.kubebuilder.io/v4
+projectName: alt-image-update-operator
+repo: alt-image-update-operator
+resources: []
+version: "3"

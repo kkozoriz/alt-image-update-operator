@@ -14,7 +14,7 @@
     {
       "id": "T001",
       "title": "Bootstrap Kubebuilder project baseline",
-      "status": "queued",
+      "status": "done",
       "priority": 100,
       "dependencies": [],
       "area": "scaffold",
@@ -41,11 +41,12 @@
       ],
       "implementation_notes": "Use Kubebuilder conventions and preserve any existing repository files. If kubebuilder is unavailable, document the exact blocker in progress.txt and manually create only the minimal equivalent scaffold.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 2,
+      "assigned_to": "ralph-42093",
+      "started_at": "2026-05-02T10:40:35Z",
+      "completed_at": "2026-05-02T10:45:32Z",
+      "result_summary": "Bootstrapped the Kubebuilder/controller-runtime project baseline with manager entrypoint, Makefile targets, Dockerfile, PROJECT metadata, default manager/RBAC/metrics kustomize config, and Go module dependencies. Used controller-runtime v0.22.5 because it is the newest compatible version available in the local module cache in this network-restricted environment.",
+      "validation_result": "Passed with sandbox-safe environment: gofmt on generated Go files; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./...; same environment make manifests. Bare go test ./... and make manifests were also attempted, but this sandbox cannot write to /Users/konstantin/Library/Caches/go-build, so they fail with operation not permitted. make manifests used a locally installed controller-gen binary from cached controller-tools v0.18.0 because network access is restricted."
     },
     {
       "id": "T002",
