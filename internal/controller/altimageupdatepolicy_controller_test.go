@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -450,6 +451,68 @@ func TestReconcileCompletedCheckJobUpdatesAvailableReusesBuildPipeline(t *testin
 	ready := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready condition = %#v, want True", ready)
+	}
+}
+
+func TestReconcileEmitsPipelineMilestoneEventsOnce(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	policy.Spec.Check.Mode = securityv1alpha1.CheckModeAltAptSimulation
+	checkJob := testCheckJobForPolicy(t, policy)
+	checkJob.UID = "check-job-uid"
+	checkJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	buildID := run.BuildID(policy)
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+	deployment := rolledOutDeploymentForPolicy(policy, wantImage, buildID, 8)
+	ownedPod := testCheckPodForJob(checkJob, "check-pod-owned", corev1.PodSucceeded)
+	logReader := &fakeCheckJobLogReader{
+		logs: "The following packages will be upgraded:\n  openssl\n1 upgraded, 0 newly installed, 0 removed and 0 not upgraded.\n",
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		deployment,
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		checkJob,
+		buildJob,
+		ownedPod,
+	)
+	reconciler.CheckLogReader = logReader
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("first Reconcile returned error: %v", err)
+	}
+
+	events := recordedEvents(t, reconciler)
+	assertEventReasons(t, events,
+		eventReasonCheckStarted,
+		eventReasonCheckCompleted,
+		eventReasonBuildStarted,
+		eventReasonBuildCompleted,
+		eventReasonDeploymentUpdated,
+		eventReasonRolloutCompleted,
+		eventReasonPolicySucceeded,
+	)
+	assertEventsContain(t, events, policy.Namespace+"/"+policy.Name)
+	assertEventsContain(t, events, checkJob.Name)
+	assertEventsContain(t, events, buildJob.Name)
+	assertEventsContain(t, events, wantImage)
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("second Reconcile returned error: %v", err)
+	}
+	if events := recordedEvents(t, reconciler); len(events) != 0 {
+		t.Fatalf("events after terminal current-run reconcile = %v, want none", events)
 	}
 }
 
@@ -1247,6 +1310,42 @@ func TestReconcileFailedBuildJobSetsFailedStatus(t *testing.T) {
 	}
 }
 
+func TestReconcileEmitsFailureEvents(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:    batchv1.JobFailed,
+			Status:  corev1.ConditionTrue,
+			Reason:  "BackoffLimitExceeded",
+			Message: "Job has reached the specified backoff limit",
+		},
+	}
+	reconciler := newTestReconciler(t,
+		policy,
+		testDeployment("demo-app", "app"),
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	events := recordedEvents(t, reconciler)
+	assertEventReasons(t, events,
+		eventReasonBuildStarted,
+		eventReasonBuildFailed,
+		eventReasonPolicyFailed,
+	)
+	assertEventsContain(t, events, policy.Namespace+"/"+policy.Name)
+	assertEventsContain(t, events, buildJob.Name)
+	if eventsContain(events, "pull-secret") {
+		t.Fatalf("events unexpectedly contain Secret data/name: %v", events)
+	}
+}
+
 func TestReconcileMissingTargetDeploymentSetsFailedStatus(t *testing.T) {
 	policy := testPolicy()
 	reconciler := newTestReconciler(t, policy)
@@ -1347,6 +1446,7 @@ func newTestReconciler(t *testing.T, objects ...client.Object) *AltImageUpdatePo
 			Build(),
 		Scheme:         scheme,
 		CheckLogReader: &fakeCheckJobLogReader{},
+		Recorder:       record.NewFakeRecorder(100),
 	}
 }
 
@@ -1689,4 +1789,62 @@ func statusContains(status securityv1alpha1.AltImageUpdatePolicyStatus, value st
 		}
 	}
 	return false
+}
+
+func recordedEvents(t *testing.T, reconciler *AltImageUpdatePolicyReconciler) []string {
+	t.Helper()
+
+	recorder, ok := reconciler.Recorder.(*record.FakeRecorder)
+	if !ok {
+		t.Fatalf("Recorder = %T, want *record.FakeRecorder", reconciler.Recorder)
+	}
+
+	var events []string
+	for {
+		select {
+		case event := <-recorder.Events:
+			events = append(events, event)
+		default:
+			return events
+		}
+	}
+}
+
+func assertEventReasons(t *testing.T, events []string, wantReasons ...string) {
+	t.Helper()
+
+	if len(events) != len(wantReasons) {
+		t.Fatalf("events len = %d, want %d\n events: %v", len(events), len(wantReasons), events)
+	}
+	for _, reason := range wantReasons {
+		needle := " " + reason + " "
+		if !eventsContain(events, needle) {
+			t.Fatalf("missing event reason %q in events: %v", reason, events)
+		}
+		if count := countEventsContaining(events, needle); count != 1 {
+			t.Fatalf("event reason %q count = %d, want 1 in events: %v", reason, count, events)
+		}
+	}
+}
+
+func assertEventsContain(t *testing.T, events []string, value string) {
+	t.Helper()
+
+	if !eventsContain(events, value) {
+		t.Fatalf("events do not contain %q: %v", value, events)
+	}
+}
+
+func eventsContain(events []string, value string) bool {
+	return countEventsContaining(events, value) > 0
+}
+
+func countEventsContaining(events []string, value string) int {
+	count := 0
+	for _, event := range events {
+		if strings.Contains(event, value) {
+			count++
+		}
+	}
+	return count
 }

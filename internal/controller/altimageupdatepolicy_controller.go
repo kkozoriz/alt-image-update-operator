@@ -39,12 +39,28 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
+	eventRecorderName = "altimageupdatepolicy-controller"
+
+	eventReasonCheckStarted            = "CheckStarted"
+	eventReasonCheckCompleted          = "CheckCompleted"
+	eventReasonCheckFailed             = "CheckFailed"
+	eventReasonBuildStarted            = "BuildStarted"
+	eventReasonBuildCompleted          = "BuildCompleted"
+	eventReasonBuildFailed             = "BuildFailed"
+	eventReasonDeploymentUpdateStarted = "DeploymentUpdateStarted"
+	eventReasonDeploymentUpdated       = "DeploymentUpdated"
+	eventReasonRolloutCompleted        = "RolloutCompleted"
+	eventReasonRolloutFailed           = "RolloutFailed"
+	eventReasonPolicySucceeded         = "PolicySucceeded"
+	eventReasonPolicyFailed            = "PolicyFailed"
+
 	reasonPreflightSucceeded       = "PreflightSucceeded"
 	reasonTargetDeploymentNotFound = "TargetDeploymentNotFound"
 	reasonTargetContainerNotFound  = "TargetContainerNotFound"
@@ -76,6 +92,7 @@ type AltImageUpdatePolicyReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
 	CheckLogReader CheckJobLogReader
+	Recorder       record.EventRecorder
 }
 
 // CheckJobLogReader reads container logs for a completed Check Job pod.
@@ -592,6 +609,7 @@ func (r *AltImageUpdatePolicyReconciler) applyBuiltImageToDeployment(ctx context
 	if !changed {
 		return false, appliedAt, nil
 	}
+	r.emitEvent(policy, corev1.EventTypeNormal, eventReasonDeploymentUpdateStarted, fmt.Sprintf("Policy %s is patching Deployment %q container %q to image %q", policyIdentifier(policy), deployment.Name, policy.Spec.ContainerName, builtImage))
 	if err := r.Patch(ctx, deployment, client.StrategicMergeFrom(before)); err != nil {
 		return false, nil, err
 	}
@@ -728,7 +746,130 @@ func (r *AltImageUpdatePolicyReconciler) updatePolicyStatus(ctx context.Context,
 	if original != nil && apiequality.Semantic.DeepEqual(original, &policy.Status) {
 		return nil
 	}
-	return r.Status().Update(ctx, policy)
+	if err := r.Status().Update(ctx, policy); err != nil {
+		return err
+	}
+	r.emitStatusTransitionEvents(policy, original)
+	return nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) emitStatusTransitionEvents(policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) {
+	if r.Recorder == nil || policy == nil {
+		return
+	}
+	if original == nil {
+		original = &securityv1alpha1.AltImageUpdatePolicyStatus{}
+	}
+
+	policyID := policyIdentifier(policy)
+
+	if policy.Status.LastCheckJobName != "" && original.LastCheckJobName != policy.Status.LastCheckJobName {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonCheckStarted, fmt.Sprintf("Policy %s started Check Job %q using ALT base image %q", policyID, policy.Status.LastCheckJobName, policy.Spec.Alt.BaseImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonCheckCompleted, fmt.Sprintf("Policy %s completed Check Job %q for ALT base image %q: %s", policyID, policy.Status.LastCheckJobName, policy.Spec.Alt.BaseImage, policy.Status.Message))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonCheckFailed, fmt.Sprintf("Policy %s Check Job %q failed for ALT base image %q: %s", policyID, policy.Status.LastCheckJobName, policy.Spec.Alt.BaseImage, policy.Status.Message))
+	}
+
+	if policy.Status.LastBuildJobName != "" && (original.LastBuildJobName != policy.Status.LastBuildJobName || timeChanged(original.LastBuildStartTime, policy.Status.LastBuildStartTime)) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonBuildStarted, fmt.Sprintf("Policy %s started Build Job %q for image %q", policyID, policy.Status.LastBuildJobName, eventImage(policy)))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonBuildCompleted, fmt.Sprintf("Policy %s completed Build Job %q and published image %q", policyID, policy.Status.LastBuildJobName, policy.Status.LastBuiltImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonBuildFailed, fmt.Sprintf("Policy %s Build Job %q failed: %s", policyID, policy.Status.LastBuildJobName, policy.Status.Message))
+	}
+
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionDeploymentUpdated, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonDeploymentUpdated, fmt.Sprintf("Policy %s updated Deployment %q to image %q", policyID, policy.Spec.TargetRef.Name, policy.Status.LastAppliedImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonRolloutCompleted, fmt.Sprintf("Policy %s completed rollout for Deployment %q with image %q", policyID, policy.Spec.TargetRef.Name, policy.Status.LastAppliedImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionFalse) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonRolloutFailed, fmt.Sprintf("Policy %s rollout failed for Deployment %q with image %q: %s", policyID, policy.Spec.TargetRef.Name, policy.Status.LastAppliedImage, policy.Status.Message))
+	}
+
+	if phaseTransitionedTo(original, &policy.Status, securityv1alpha1.PolicyPhaseSucceeded) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonPolicySucceeded, fmt.Sprintf("Policy %s completed successfully with image %q", policyID, policy.Status.LastAppliedImage))
+	}
+	if phaseTransitionedTo(original, &policy.Status, securityv1alpha1.PolicyPhaseFailed) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonPolicyFailed, fmt.Sprintf("Policy %s failed: %s", policyID, policy.Status.Message))
+	}
+}
+
+func (r *AltImageUpdatePolicyReconciler) emitEvent(policy *securityv1alpha1.AltImageUpdatePolicy, eventType, reason, message string) {
+	if r.Recorder == nil || policy == nil {
+		return
+	}
+	r.Recorder.Event(policy, eventType, reason, message)
+}
+
+func policyIdentifier(policy *securityv1alpha1.AltImageUpdatePolicy) string {
+	if policy == nil {
+		return "/"
+	}
+	return policy.Namespace + "/" + policy.Name
+}
+
+func eventImage(policy *securityv1alpha1.AltImageUpdatePolicy) string {
+	if policy == nil {
+		return ""
+	}
+	if policy.Status.LastBuiltImage != "" {
+		return policy.Status.LastBuiltImage
+	}
+	if policy.Status.LastAppliedImage != "" {
+		return policy.Status.LastAppliedImage
+	}
+	return policy.Spec.Build.OutputImage
+}
+
+func timeChanged(oldTime, newTime *metav1.Time) bool {
+	if newTime == nil {
+		return false
+	}
+	if oldTime == nil {
+		return true
+	}
+	return !oldTime.Equal(newTime)
+}
+
+func conditionTransitionedTo(original, current *securityv1alpha1.AltImageUpdatePolicyStatus, conditionType string, status metav1.ConditionStatus) bool {
+	currentCondition := statusCondition(current, conditionType)
+	if currentCondition == nil || currentCondition.Status != status {
+		return false
+	}
+	originalCondition := statusCondition(original, conditionType)
+	if originalCondition == nil {
+		return true
+	}
+	return originalCondition.Status != currentCondition.Status ||
+		originalCondition.Reason != currentCondition.Reason ||
+		originalCondition.Message != currentCondition.Message ||
+		originalCondition.ObservedGeneration != currentCondition.ObservedGeneration
+}
+
+func statusCondition(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus, conditionType string) *metav1.Condition {
+	if policyStatus == nil {
+		return nil
+	}
+	for i := range policyStatus.Conditions {
+		if policyStatus.Conditions[i].Type == conditionType {
+			return &policyStatus.Conditions[i]
+		}
+	}
+	return nil
+}
+
+func phaseTransitionedTo(original, current *securityv1alpha1.AltImageUpdatePolicyStatus, phase securityv1alpha1.PolicyPhase) bool {
+	if current == nil || current.Phase != phase {
+		return false
+	}
+	return original == nil || original.Phase != phase || original.ObservedGeneration != current.ObservedGeneration || original.CurrentRunKey != current.CurrentRunKey
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -739,6 +880,9 @@ func (r *AltImageUpdatePolicyReconciler) SetupWithManager(mgr ctrl.Manager) erro
 			return err
 		}
 		r.CheckLogReader = &kubernetesCheckJobLogReader{clientset: clientset}
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor(eventRecorderName)
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).

@@ -860,7 +860,7 @@
     {
       "id": "T024",
       "title": "Emit Kubernetes Events for pipeline milestones",
-      "status": "queued",
+      "status": "done",
       "priority": 77,
       "dependencies": [
         "T019",
@@ -886,11 +886,12 @@
       ],
       "implementation_notes": "Use controller-runtime event recorder. Use deterministic transition checks to avoid event spam.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:28:37Z",
+      "completed_at": "2026-05-02T13:34:54Z",
+      "result_summary": "Added controller-runtime Kubernetes Event recording for AltImageUpdatePolicy pipeline transitions. The reconciler now emits Normal events for CheckStarted, CheckCompleted, BuildStarted, BuildCompleted, DeploymentUpdateStarted, DeploymentUpdated, RolloutCompleted, and PolicySucceeded, plus Warning events for CheckFailed, BuildFailed, RolloutFailed, and PolicyFailed. Event emission is driven by status transition comparisons so repeated reconciles do not spam duplicate events, and messages include policy/job/image identifiers without registry Secret data.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller; same environment go test ./..."
     },
     {
       "id": "T025",
