@@ -484,7 +484,7 @@
     {
       "id": "T014",
       "title": "Generate complete controller RBAC",
-      "status": "queued",
+      "status": "done",
       "priority": 87,
       "dependencies": [
         "T002",
@@ -514,11 +514,12 @@
       ],
       "implementation_notes": "Use least privilege that still supports the PRD. Do not add broad wildcard resources unless a narrow rule is not feasible.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:44:37Z",
+      "completed_at": "2026-05-02T12:46:49Z",
+      "result_summary": "Added complete least-privilege controller RBAC markers for AltImageUpdatePolicy access/status, Jobs, Pods/log, Deployments, Events, ConfigMaps, and registry Secret reads. Regenerated manager ClusterRole and added AltImageUpdatePolicy editor/viewer ClusterRoles to the RBAC kustomization.",
+      "validation_result": "Passed: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make manifests; same environment go test ./...; kubectl --kubeconfig /Users/konstantin/.kube-remote/minikube-config get nodes confirmed remote minikube Ready; kubectl --kubeconfig /Users/konstantin/.kube-remote/minikube-config apply --dry-run=client -k config/default passed."
     },
     {
       "id": "T015",

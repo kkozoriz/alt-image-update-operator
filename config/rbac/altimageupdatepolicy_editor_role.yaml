@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: altimageupdatepolicy-editor-role
+rules:
+- apiGroups:
+  - security.altlinux.org
+  resources:
+  - altimageupdatepolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - security.altlinux.org
+  resources:
+  - altimageupdatepolicies/status
+  verbs:
+  - get

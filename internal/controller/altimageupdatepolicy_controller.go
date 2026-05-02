@@ -33,9 +33,16 @@ type AltImageUpdatePolicyReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // Reconcile reads AltImageUpdatePolicy resources and intentionally performs no product workflow yet.
 func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
