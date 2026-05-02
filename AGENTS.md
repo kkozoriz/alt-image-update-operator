@@ -90,6 +90,20 @@ The MVP is complete only when these behaviors are implemented:
 - Add e2e/demo script for the full workflow.
 - If a validation command cannot run because the environment lacks a tool, document the exact reason in `progress.txt` and still run all available checks.
 
+## Cluster safety
+
+- Do not run `kubectl`, `helm`, `kind`, `minikube`, or e2e commands against the developer laptop default kubeconfig.
+- The developer laptop kubeconfig may point to unrelated production or work clusters. Treat local `~/.kube/config` as unsafe unless the user explicitly says otherwise for the current task.
+- The only Kubernetes cluster allowed for real e2e/demo work is the remote minikube host reachable with:
+
+```bash
+ssh clouduser@185.120.186.138
+```
+
+- Run live-cluster commands on that remote host over SSH, or use an explicitly provided kubeconfig that is confirmed to target only that remote minikube cluster.
+- If a validation command needs a live cluster and the remote minikube node is `NotReady`, mark the task `blocked` or skip only that live-cluster validation as appropriate for the task, and record the exact reason in `progress.txt`.
+- Never apply manifests, install CRDs, run controllers, or execute e2e scripts against a cluster unless the target cluster has been explicitly confirmed as the allowed remote minikube.
+
 ## Documentation expectations
 
 Document:
