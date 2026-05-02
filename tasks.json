@@ -524,7 +524,7 @@
     {
       "id": "T015",
       "title": "Implement reconcile preflight and failure statuses",
-      "status": "queued",
+      "status": "done",
       "priority": 86,
       "dependencies": [
         "T005",
@@ -553,11 +553,12 @@
       ],
       "implementation_notes": "Keep reconcile idempotent. Use status subresource updates and avoid updating spec-owned fields.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:47:40Z",
+      "completed_at": "2026-05-02T12:51:25Z",
+      "result_summary": "Implemented the first real reconcile preflight phase: the controller now computes and records the current run key/build ID, validates the target Deployment and target container, validates the ConfigMap build context and Dockerfile key, writes status through the status subresource, and records deterministic Failed reasons for missing prerequisites. Added fake-client reconciliation tests for success and all required failure cases.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller; same environment go test ./..."
     },
     {
       "id": "T016",
