@@ -161,7 +161,7 @@
     {
       "id": "T005",
       "title": "Implement status phases and condition helpers",
-      "status": "queued",
+      "status": "done",
       "priority": 96,
       "dependencies": [
         "T003"
@@ -186,11 +186,12 @@
       ],
       "implementation_notes": "Keep this package independent from controller-runtime clients so it remains easy to unit test.",
       "risk": "low",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-11651",
+      "started_at": "2026-05-02T11:45:07Z",
+      "completed_at": "2026-05-02T11:51:18Z",
+      "result_summary": "Added internal/status helpers for phases, Kubernetes conditions, stage transitions, and failure handling, with focused unit tests for creation, transition, no-op update, observedGeneration updates, and stage helper consistency.",
+      "validation_result": "Passed: gofmt -w internal/status/phase.go internal/status/conditions.go internal/status/conditions_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/status; same environment go test ./..."
     },
     {
       "id": "T006",
