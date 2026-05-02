@@ -13,7 +13,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -173,6 +175,130 @@ func TestEnvtestReconcilerCreatesBuildJobAndObservesJobStatus(t *testing.T) {
 	}
 }
 
+func TestEnvtestRejectsInvalidCheckMode(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := envtestPolicy(namespace)
+	policy.Name = "invalid-check-mode"
+	policy.Spec.Check.Mode = securityv1alpha1.CheckMode("Sometimes")
+
+	err := c.Create(ctx, policy)
+	if err == nil {
+		t.Fatalf("create policy with invalid check mode succeeded, want API server validation error")
+	}
+	if !apierrors.IsInvalid(err) {
+		t.Fatalf("create policy with invalid check mode error = %v, want invalid error", err)
+	}
+}
+
+func TestEnvtestRejectsMissingRequiredSpecFields(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	tests := []struct {
+		name   string
+		object map[string]interface{}
+	}{
+		{
+			name: "missing spec",
+			object: map[string]interface{}{
+				"apiVersion": securityv1alpha1.GroupVersion.String(),
+				"kind":       "AltImageUpdatePolicy",
+				"metadata": map[string]interface{}{
+					"name":      "missing-spec",
+					"namespace": namespace,
+				},
+			},
+		},
+		{
+			name: "missing required spec children",
+			object: map[string]interface{}{
+				"apiVersion": securityv1alpha1.GroupVersion.String(),
+				"kind":       "AltImageUpdatePolicy",
+				"metadata": map[string]interface{}{
+					"name":      "missing-spec-children",
+					"namespace": namespace,
+				},
+				"spec": map[string]interface{}{
+					"alt": map[string]interface{}{
+						"branch":    string(securityv1alpha1.AltBranchP10),
+						"baseImage": "registry.altlinux.org/alt/alt:p10",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := c.Create(ctx, &unstructured.Unstructured{Object: tt.object})
+			if err == nil {
+				t.Fatalf("create invalid policy succeeded, want API server validation error")
+			}
+			if !apierrors.IsInvalid(err) {
+				t.Fatalf("create invalid policy error = %v, want invalid error", err)
+			}
+		})
+	}
+}
+
+func TestEnvtestReconcilerSetsFailedStatusForMissingDeployment(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := envtestPolicy(namespace)
+	if err := c.Create(ctx, policy); err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+
+	assertEnvtestFailedPreflight(t, ctx, reconciler, namespace, policy.Name, reasonTargetDeploymentNotFound)
+}
+
+func TestEnvtestReconcilerSetsFailedStatusForMissingConfigMap(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := envtestPolicy(namespace)
+	deployment := envtestDeployment(namespace, policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+
+	for _, object := range []client.Object{deployment, policy} {
+		if err := c.Create(ctx, object); err != nil {
+			t.Fatalf("create %T: %v", object, err)
+		}
+	}
+
+	assertEnvtestFailedPreflight(t, ctx, reconciler, namespace, policy.Name, reasonBuildContextNotFound)
+}
+
+func TestEnvtestReconcilerSetsFailedStatusForMissingDockerfileKey(t *testing.T) {
+	ctx := context.Background()
+	c := envtestClientForTest(t)
+	reconciler := newEnvtestReconciler(t)
+
+	namespace := createEnvtestNamespace(t, ctx, c)
+	policy := envtestPolicy(namespace)
+	deployment := envtestDeployment(namespace, policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+	configMap := testConfigMap(policy.Spec.Build.Context.ConfigMapRef.Name, map[string]string{
+		"Containerfile": "FROM registry.altlinux.org/alt/alt:p10\n",
+	})
+	configMap.Namespace = namespace
+
+	for _, object := range []client.Object{deployment, configMap, policy} {
+		if err := c.Create(ctx, object); err != nil {
+			t.Fatalf("create %T: %v", object, err)
+		}
+	}
+
+	assertEnvtestFailedPreflight(t, ctx, reconciler, namespace, policy.Name, reasonDockerfileKeyNotFound)
+}
+
 func envtestClientForTest(t *testing.T) client.Client {
 	t.Helper()
 	requireEnvtest(t)
@@ -256,4 +382,44 @@ func getEnvtestDeployment(t *testing.T, ctx context.Context, c client.Client, na
 		t.Fatalf("get deployment %s/%s: %v", namespace, name, err)
 	}
 	return &deployment
+}
+
+func assertEnvtestFailedPreflight(t *testing.T, ctx context.Context, reconciler *AltImageUpdatePolicyReconciler, namespace, policyName, wantReason string) {
+	t.Helper()
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: policyName}})
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("Reconcile result = %#v, want no explicit requeue after failed preflight", result)
+	}
+
+	updated := getEnvtestPolicy(t, ctx, reconciler.Client, namespace, policyName)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != wantReason {
+		t.Fatalf("reason = %q, want %q", updated.Status.Reason, wantReason)
+	}
+	if updated.Status.ObservedGeneration != updated.Generation {
+		t.Fatalf("observedGeneration = %d, want policy generation %d", updated.Status.ObservedGeneration, updated.Generation)
+	}
+	if updated.Status.CurrentRunKey != run.RunKey(updated) {
+		t.Fatalf("currentRunKey = %q, want %q", updated.Status.CurrentRunKey, run.RunKey(updated))
+	}
+	if updated.Status.BuildID != run.BuildID(updated) {
+		t.Fatalf("buildID = %q, want %q", updated.Status.BuildID, run.BuildID(updated))
+	}
+
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil {
+		t.Fatalf("missing %s condition", securityv1alpha1.ConditionFailed)
+	}
+	if failed.Status != metav1.ConditionTrue {
+		t.Fatalf("failed condition status = %q, want %q", failed.Status, metav1.ConditionTrue)
+	}
+	if failed.Reason != wantReason {
+		t.Fatalf("failed condition reason = %q, want %q", failed.Reason, wantReason)
+	}
 }
