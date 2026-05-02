@@ -17,3 +17,4 @@
 [2026-05-02T10:58:25Z] VALIDATION T031: Commit was not created because git add failed to create .git/index.lock in this sandbox: Operation not permitted.
 [2026-05-02T10:58:50Z] RALPH STOP max_iterations=1
 [2026-05-02T11:02:14Z] RALPH TOOLING_FIX: fixed Ralph priority ordering so higher task priority numbers run first. Reset T031 to queued because it was assigned out of order before T002; left the generated uncommitted scripts in place for reuse when T031 is reached intentionally.
+[2026-05-02T11:04:07Z] WORKER_PROMPT_FIX: tightened prompts/03_worker_prompt.md so tasks are not marked done unless required validation and the required git commit succeed.
