@@ -32,6 +32,10 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def utcstamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
 def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
 
@@ -200,6 +204,7 @@ def render_prompt(worker_prompt: str, task_id: str, worker_id: str, project_root
         + f"WORKER_ID: {worker_id}\n"
         + f"PROJECT_ROOT: {project_root}\n"
         + f"TASKS_FILE: {tasks_path}\n"
+        + "CONTEXT_MODE: fresh Codex exec session; use repository files, git history, tasks.json, and progress.txt as shared memory\n"
     )
 
 
@@ -342,6 +347,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ralph_dir.mkdir(parents=True, exist_ok=True)
 
     worker_id = f"ralph-{os.getpid()}"
+    run_stamp = utcstamp()
     append_progress(progress_path, f"RALPH START worker_id={worker_id} model={args.model} reasoning_effort={args.reasoning_effort}")
 
     iteration = 0
@@ -381,8 +387,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         append_progress(progress_path, f"RALPH ASSIGN {task_id}: {title}")
 
         prompt = render_prompt(worker_prompt, task_id, worker_id, project_root, tasks_path)
-        log_path = ralph_dir / f"{iteration:04d}_{task_id}.log"
-        last_message_path = ralph_dir / f"{iteration:04d}_{task_id}_last.md"
+        log_prefix = f"{run_stamp}_{iteration:04d}_{task_id}"
+        log_path = ralph_dir / f"{log_prefix}.log"
+        last_message_path = ralph_dir / f"{log_prefix}_last.md"
 
         print(f"[ralph] running Codex for {task_id}: {title}")
         rc = run_codex(

@@ -28,3 +28,4 @@
 [2026-05-02T11:13:24Z] DONE T002: AltImageUpdatePolicy scaffold is complete and committed as 3ecff58 with CRD, sample, generated deepcopy, controller registration, and manager wiring.
 [2026-05-02T11:14:24Z] RALPH STOP max_iterations=1
 [2026-05-02T11:16:23Z] WORKER_PROMPT_FIX: clarified that final progress/task updates must be written before staging and committing, and that workers must not modify tracked files after a successful commit.
+[2026-05-02T11:17:56Z] RALPH TOOLING_IMPROVEMENT: documented fresh-session context mode in the worker prompt and added timestamped .ralph log filenames to preserve retry history.
