@@ -168,6 +168,7 @@ def run_codex(
     log_path: Path,
     last_message_path: Path,
     extra_args: List[str],
+    stream_logs: bool,
 ) -> int:
     cmd = [
         codex_bin,
@@ -178,8 +179,6 @@ def run_codex(
         model,
         "--sandbox",
         sandbox,
-        "--ask-for-approval",
-        approval,
         "--output-last-message",
         str(last_message_path),
         "--skip-git-repo-check",
@@ -191,15 +190,28 @@ def run_codex(
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"$ {' '.join(cmd)}\n\n")
         log.flush()
-        proc = subprocess.run(
+
+        proc = subprocess.Popen(
             cmd,
-            input=prompt,
-            text=True,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True,
             cwd=str(project_root),
         )
-        log.write(proc.stdout or "")
+
+        assert proc.stdin is not None
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            log.write(line)
+            log.flush()
+            if stream_logs:
+                print(line, end="", flush=True)
+
+        proc.wait()
         log.write(f"\n\n[ralph] exit_code={proc.returncode}\n")
     return proc.returncode
 
@@ -224,12 +236,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--worker-prompt", default="prompts/03_worker_prompt.md", help="Path to worker prompt")
     parser.add_argument("--model", default="gpt-5.5", help="Codex model, e.g. gpt-5.5 or gpt-5.4")
     parser.add_argument("--sandbox", default="workspace-write", choices=["read-only", "workspace-write", "danger-full-access"], help="Codex sandbox mode")
-    parser.add_argument("--approval", default="never", choices=["untrusted", "on-request", "never"], help="Approval mode. Use never for non-interactive runs.")
+    parser.add_argument("--approval", default="never", choices=["untrusted", "on-request", "never"], help="Deprecated compatibility option; codex-cli 0.128.0 no longer accepts an approval flag for exec.")
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
     parser.add_argument("--sleep", type=float, default=2.0, help="Seconds between iterations")
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means unlimited until no runnable tasks")
     parser.add_argument("--stop-on-failure", action="store_true", help="Stop if Codex exits non-zero")
     parser.add_argument("--extra-codex-arg", action="append", default=[], help="Extra argument passed to codex exec; repeatable")
+    parser.add_argument("--no-stream-logs", action="store_true", help="Do not stream Codex output to the terminal; only write .ralph logs")
     return parser.parse_args(argv)
 
 
@@ -311,6 +324,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             log_path=log_path,
             last_message_path=last_message_path,
             extra_args=list(args.extra_codex_arg or []),
+            stream_logs=not args.no_stream_logs,
         )
 
         if rc != 0:
