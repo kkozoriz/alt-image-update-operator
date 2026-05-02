@@ -29,3 +29,12 @@
 [2026-05-02T11:14:24Z] RALPH STOP max_iterations=1
 [2026-05-02T11:16:23Z] WORKER_PROMPT_FIX: clarified that final progress/task updates must be written before staging and committing, and that workers must not modify tracked files after a successful commit.
 [2026-05-02T11:17:56Z] RALPH TOOLING_IMPROVEMENT: documented fresh-session context mode in the worker prompt and added timestamped .ralph log filenames to preserve retry history.
+[2026-05-02T11:19:41Z] RALPH START worker_id=ralph-67391 model=gpt-5.5 reasoning_effort=high
+[2026-05-02T11:19:41Z] RALPH ASSIGN T003: Define CRD spec status and validation markers
+[2026-05-02T11:20:13Z] START T003: Define CRD spec status and validation markers
+[2026-05-02T11:23:12Z] CHANGED T003: Updated api/v1alpha1/altimageupdatepolicy_types.go with required AltImageUpdatePolicy spec/status structs, enum constants, validation markers, and printer columns; regenerated api/v1alpha1/zz_generated.deepcopy.go and config/crd/bases/security.altlinux.org_altimageupdatepolicies.yaml; updated config/samples/security_v1alpha1_altimageupdatepolicy.yaml to a valid minimal policy.
+[2026-05-02T11:23:12Z] VALIDATION T003: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make generate: passed; same environment make manifests: passed; same environment go test ./...: passed.
+[2026-05-02T11:23:12Z] CHANGED T003: CRD API surface, OpenAPI validation, status fields, printer columns, generated files, and sample manifest are complete in the worktree pending the required commit.
+[2026-05-02T11:23:55Z] BLOCKED T003: Required git commit could not be created because git add failed with "Unable to create '/Users/konstantin/GolandProjects/alt-image-update-operator/.git/index.lock': Operation not permitted". Implementation and validation passed, but task status is blocked until git index writes are allowed and the T003 files can be committed.
+[2026-05-02T11:24:37Z] RALPH STOP max_iterations=1
+[2026-05-02T11:26:13Z] DONE T003: Reviewed and accepted the completed API surface; converted T003 from blocked to done after confirming validation had passed and preparing the required commit.

@@ -5,4 +5,22 @@ metadata:
     app.kubernetes.io/name: alt-image-update-operator
     app.kubernetes.io/managed-by: kustomize
   name: altimageupdatepolicy-sample
-spec: {}
+spec:
+  alt:
+    branch: p10
+    baseImage: alt:p10
+  check:
+    mode: Always
+  build:
+    builder: Kaniko
+    outputImage: localhost:5001/alt/demo-app
+    context:
+      type: ConfigMap
+      configMapRef:
+        name: demo-app-context
+        dockerfileKey: Dockerfile
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-app
+  containerName: app

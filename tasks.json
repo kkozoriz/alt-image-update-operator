@@ -89,7 +89,7 @@
     {
       "id": "T003",
       "title": "Define CRD spec status and validation markers",
-      "status": "queued",
+      "status": "done",
       "priority": 98,
       "dependencies": [
         "T002"
@@ -115,11 +115,12 @@
       ],
       "implementation_notes": "Use Kubebuilder validation markers and explicit enum constants. Do not add webhook-only validation in MVP unless required by controller-runtime scaffolding.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-67391",
+      "started_at": "2026-05-02T11:19:41Z",
+      "completed_at": "2026-05-02T11:26:13Z",
+      "result_summary": "Implemented the full AltImageUpdatePolicy API surface with required spec fields, status fields, enum constants, validation markers, printer columns, regenerated deepcopy/CRD manifests, and updated the sample policy.",
+      "validation_result": "Passed with sandbox-safe environment: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make generate; same environment make manifests; same environment go test ./..."
     },
     {
       "id": "T004",
