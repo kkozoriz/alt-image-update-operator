@@ -671,7 +671,7 @@
     {
       "id": "T019",
       "title": "Complete rollout observation and success status",
-      "status": "queued",
+      "status": "done",
       "priority": 82,
       "dependencies": [
         "T013",
@@ -699,11 +699,12 @@
       ],
       "implementation_notes": "Do not block reconcile with long sleeps. Requeue while rollout is progressing.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T13:04:16Z",
+      "completed_at": "2026-05-02T13:07:48Z",
+      "result_summary": "Finished Always-mode rollout observation after a completed build and Deployment image apply. The controller now observes the target Deployment rollout without blocking, requeues while rollout is progressing, records Succeeded with Ready=True and lastRolloutTime when replicas converge, and records Failed with reason RolloutFailed when rollout observation fails. Added controller coverage for progressing, successful, and failed rollout outcomes.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/deploy/rollout.go internal/status/conditions.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller ./internal/deploy ./internal/status; same environment go test ./..."
     },
     {
       "id": "T020",

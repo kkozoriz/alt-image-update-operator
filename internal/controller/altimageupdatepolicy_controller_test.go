@@ -196,8 +196,8 @@ func TestReconcileCompletedBuildJobPatchesDeploymentAndRecordsAppliedImage(t *te
 	if err != nil {
 		t.Fatalf("Reconcile returned error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
-		t.Fatalf("result = %#v, want no explicit requeue after recording completed build", result)
+	if result.RequeueAfter != rolloutRequeueAfter {
+		t.Fatalf("RequeueAfter = %s, want %s while rollout is progressing", result.RequeueAfter, rolloutRequeueAfter)
 	}
 
 	buildID := run.BuildID(policy)
@@ -237,8 +237,8 @@ func TestReconcileCompletedBuildJobPatchesDeploymentAndRecordsAppliedImage(t *te
 	if updated.Status.Phase != securityv1alpha1.PolicyPhaseRollingOut {
 		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseRollingOut)
 	}
-	if updated.Status.Reason != reasonDeploymentPatched {
-		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonDeploymentPatched)
+	if updated.Status.Reason == reasonDeploymentPatched {
+		t.Fatalf("Reason = %q, want rollout observation reason after Deployment patch", updated.Status.Reason)
 	}
 	if updated.Status.LastBuildJobName != buildJob.Name {
 		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJob.Name)
@@ -270,6 +270,10 @@ func TestReconcileCompletedBuildJobPatchesDeploymentAndRecordsAppliedImage(t *te
 	deploymentUpdated := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionDeploymentUpdated)
 	if deploymentUpdated == nil || deploymentUpdated.Status != metav1.ConditionTrue {
 		t.Fatalf("DeploymentUpdated condition = %#v, want True", deploymentUpdated)
+	}
+	rolloutCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionRolloutCompleted)
+	if rolloutCompleted == nil || rolloutCompleted.Status != metav1.ConditionUnknown {
+		t.Fatalf("RolloutCompleted condition = %#v, want Unknown while rollout is progressing", rolloutCompleted)
 	}
 }
 
@@ -319,14 +323,164 @@ func TestReconcileCompletedBuildJobSkipsDeploymentPatchWhenAlreadyApplied(t *tes
 	if updated.Status.Phase != securityv1alpha1.PolicyPhaseRollingOut {
 		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseRollingOut)
 	}
-	if updated.Status.Reason != reasonDeploymentAlreadyUpdated {
-		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonDeploymentAlreadyUpdated)
+	if updated.Status.Reason == reasonDeploymentAlreadyUpdated {
+		t.Fatalf("Reason = %q, want rollout observation reason after already-applied Deployment", updated.Status.Reason)
 	}
 	if updated.Status.LastAppliedImage != wantImage {
 		t.Fatalf("LastAppliedImage = %q, want %q", updated.Status.LastAppliedImage, wantImage)
 	}
 	if updated.Status.LastApplyTime == nil || updated.Status.LastApplyTime.Time.UTC().Format(time.RFC3339) != "2026-05-02T13:00:00Z" {
 		t.Fatalf("LastApplyTime = %v, want existing apply annotation timestamp", updated.Status.LastApplyTime)
+	}
+}
+
+func TestReconcileSuccessfulRolloutSetsSucceededReadyAndRolloutTime(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	buildID := run.BuildID(policy)
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+
+	replicas := int32(2)
+	deployment := testDeployment("demo-app", "app")
+	deployment.Generation = 8
+	deployment.Spec.Replicas = &replicas
+	deployment.Spec.Template.Spec.Containers[0].Image = wantImage
+	deployment.Spec.Template.Annotations = operatordeploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           wantImage,
+		BuildID:         buildID,
+		AppliedAt:       "2026-05-02T13:00:00Z",
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}.RequiredAnnotations()
+	deployment.Status.ObservedGeneration = 8
+	deployment.Status.Replicas = replicas
+	deployment.Status.UpdatedReplicas = replicas
+	deployment.Status.AvailableReplicas = replicas
+
+	reconciler := newTestReconciler(t,
+		policy,
+		deployment,
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after successful rollout", result)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseSucceeded {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseSucceeded)
+	}
+	if updated.Status.Reason != reasonRolloutCompleted {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonRolloutCompleted)
+	}
+	if updated.Status.LastBuiltImage != wantImage {
+		t.Fatalf("LastBuiltImage = %q, want %q", updated.Status.LastBuiltImage, wantImage)
+	}
+	if updated.Status.LastAppliedImage != wantImage {
+		t.Fatalf("LastAppliedImage = %q, want %q", updated.Status.LastAppliedImage, wantImage)
+	}
+	if updated.Status.LastRolloutTime == nil {
+		t.Fatalf("LastRolloutTime is nil, want rollout completion timestamp")
+	}
+
+	ready := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want True", ready)
+	}
+	rolloutCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionRolloutCompleted)
+	if rolloutCompleted == nil || rolloutCompleted.Status != metav1.ConditionTrue {
+		t.Fatalf("RolloutCompleted condition = %#v, want True", rolloutCompleted)
+	}
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionFalse {
+		t.Fatalf("Failed condition = %#v, want False", failed)
+	}
+}
+
+func TestReconcileFailedRolloutSetsFailedStatus(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{{
+		Type:   batchv1.JobComplete,
+		Status: corev1.ConditionTrue,
+	}}
+	buildID := run.BuildID(policy)
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+
+	deployment := testDeployment("demo-app", "app")
+	deployment.Generation = 6
+	deployment.Spec.Template.Spec.Containers[0].Image = wantImage
+	deployment.Spec.Template.Annotations = operatordeploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           wantImage,
+		BuildID:         buildID,
+		AppliedAt:       "2026-05-02T13:00:00Z",
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}.RequiredAnnotations()
+	deployment.Status.ObservedGeneration = 6
+	deployment.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type:    appsv1.DeploymentProgressing,
+		Status:  corev1.ConditionFalse,
+		Reason:  "ProgressDeadlineExceeded",
+		Message: "ReplicaSet demo-app-abc has timed out progressing.",
+	}}
+
+	reconciler := newTestReconciler(t,
+		policy,
+		deployment,
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+
+	result, err := reconciler.Reconcile(ctx, requestFor(policy))
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("result = %#v, want no explicit requeue after failed rollout", result)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseFailed {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseFailed)
+	}
+	if updated.Status.Reason != reasonRolloutFailed {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonRolloutFailed)
+	}
+	if updated.Status.LastBuiltImage != wantImage {
+		t.Fatalf("LastBuiltImage = %q, want %q", updated.Status.LastBuiltImage, wantImage)
+	}
+	if updated.Status.LastAppliedImage != wantImage {
+		t.Fatalf("LastAppliedImage = %q, want %q", updated.Status.LastAppliedImage, wantImage)
+	}
+
+	failed := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionFailed)
+	if failed == nil || failed.Status != metav1.ConditionTrue {
+		t.Fatalf("Failed condition = %#v, want True", failed)
+	}
+	rolloutCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionRolloutCompleted)
+	if rolloutCompleted == nil || rolloutCompleted.Status != metav1.ConditionFalse {
+		t.Fatalf("RolloutCompleted condition = %#v, want False", rolloutCompleted)
 	}
 }
 

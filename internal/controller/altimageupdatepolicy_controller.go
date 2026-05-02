@@ -53,8 +53,11 @@ const (
 	reasonBuildJobFailed           = "BuildJobFailed"
 	reasonDeploymentPatched        = "DeploymentPatched"
 	reasonDeploymentAlreadyUpdated = "DeploymentAlreadyUpdated"
+	reasonRolloutCompleted         = "RolloutCompleted"
+	reasonRolloutFailed            = "RolloutFailed"
 
 	buildJobRequeueAfter = 5 * time.Second
+	rolloutRequeueAfter  = 5 * time.Second
 )
 
 // AltImageUpdatePolicyReconciler reconciles an AltImageUpdatePolicy object.
@@ -180,12 +183,17 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 				policy.Status.LastApplyTime = appliedAt
 			}
 
+			result, err := r.observeDeploymentRollout(ctx, &policy, &deployment, originalStatus, builtImage, now)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+
 			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
 				return ctrl.Result{}, err
 			}
 
-			logger.V(1).Info("AltImageUpdatePolicy applied built image to Deployment", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name, "deployment", deployment.Name, "patched", deploymentPatched)
-			return ctrl.Result{}, nil
+			logger.V(1).Info("AltImageUpdatePolicy observed Deployment rollout", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name, "deployment", deployment.Name, "patched", deploymentPatched, "phase", policy.Status.Phase, "reason", policy.Status.Reason)
+			return result, nil
 		}
 
 		if failed := findJobCondition(buildJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
@@ -291,6 +299,56 @@ func (r *AltImageUpdatePolicyReconciler) applyBuiltImageToDeployment(ctx context
 	return true, appliedAt, nil
 }
 
+func (r *AltImageUpdatePolicyReconciler) observeDeploymentRollout(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, deployment *appsv1.Deployment, originalStatus *securityv1alpha1.AltImageUpdatePolicyStatus, builtImage string, now metav1.Time) (ctrl.Result, error) {
+	if deployment == nil {
+		return ctrl.Result{}, fmt.Errorf("deployment is nil")
+	}
+	if policy.Status.TargetDeploymentGeneration == 0 {
+		policy.Status.TargetDeploymentGeneration = deployment.Generation
+	}
+
+	if err := r.Get(ctx, types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}, deployment); err != nil {
+		return ctrl.Result{}, err
+	}
+	if deployment.Generation > policy.Status.TargetDeploymentGeneration {
+		policy.Status.TargetDeploymentGeneration = deployment.Generation
+	}
+
+	observation, err := deploy.ObserveRollout(deployment, deploy.RolloutOptions{
+		TargetGeneration: policy.Status.TargetDeploymentGeneration,
+		StartedAt:        statusTime(policy.Status.LastApplyTime),
+		Now:              now.Time,
+		Timeout:          rolloutTimeout(policy),
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	switch observation.State {
+	case deploy.RolloutStateSucceeded:
+		message := fmt.Sprintf("Deployment %q successfully rolled out image %q", deployment.Name, builtImage)
+		operatorstatus.MarkReady(&policy.Status, policy.Generation, now, reasonRolloutCompleted, message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionRolloutCompleted, metav1.ConditionTrue, reasonRolloutCompleted, message, now)
+		policy.Status.LastBuiltImage = builtImage
+		policy.Status.LastAppliedImage = builtImage
+		if policy.Status.LastRolloutTime == nil || originalStatus == nil || originalStatus.LastAppliedImage != builtImage {
+			policy.Status.LastRolloutTime = &now
+		}
+		return ctrl.Result{}, nil
+	case deploy.RolloutStateFailed:
+		message := fmt.Sprintf("Deployment %q rollout failed: %s: %s", deployment.Name, observation.Reason, observation.Message)
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonRolloutFailed, message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionRolloutCompleted, metav1.ConditionFalse, reasonRolloutFailed, message, now)
+		return ctrl.Result{}, nil
+	case deploy.RolloutStateProgressing:
+		operatorstatus.MarkRollout(&policy.Status, policy.Generation, now, observation.Reason, observation.Message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionRolloutCompleted, metav1.ConditionUnknown, observation.Reason, observation.Message, now)
+		return ctrl.Result{RequeueAfter: rolloutRequeueAfter}, nil
+	default:
+		return ctrl.Result{}, fmt.Errorf("unknown rollout state %q", observation.State)
+	}
+}
+
 func deploymentAppliedAt(deployment *appsv1.Deployment, policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, now metav1.Time) *metav1.Time {
 	if deployment != nil && deploymentContainerImage(deployment, policy.Spec.ContainerName) == builtImage {
 		annotations := deployment.Spec.Template.Annotations
@@ -306,6 +364,20 @@ func deploymentAppliedAt(deployment *appsv1.Deployment, policy *securityv1alpha1
 	}
 
 	return &now
+}
+
+func rolloutTimeout(policy *securityv1alpha1.AltImageUpdatePolicy) time.Duration {
+	if policy == nil || policy.Spec.Rollout.TimeoutSeconds == nil {
+		return 0
+	}
+	return time.Duration(*policy.Spec.Rollout.TimeoutSeconds) * time.Second
+}
+
+func statusTime(value *metav1.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.Time
 }
 
 func deploymentContainerImage(deployment *appsv1.Deployment, containerName string) string {
