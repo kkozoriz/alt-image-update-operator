@@ -8,3 +8,12 @@
 [2026-05-02T10:45:32Z] DONE T001: Kubebuilder/controller-runtime baseline compiles and manifests target runs. No product reconcile logic or CRD kind was implemented; that remains for dependent tasks.
 [2026-05-02T10:47:09Z] RALPH STOP max_iterations=1
 [2026-05-02T10:50:19Z] RALPH TOOLING_IMPROVEMENT: updated tools/ralph.py to stream Codex output to the terminal while preserving .ralph log files; added .ralph/ to .gitignore.
+[2026-05-02T10:53:45Z] RALPH START worker_id=ralph-52691 model=gpt-5.5
+[2026-05-02T10:53:45Z] RALPH ASSIGN T031: Add kind local registry setup script
+[2026-05-02T10:54:10Z] START T031: Add kind local registry setup script
+[2026-05-02T10:57:36Z] CHANGED T031: Added hack/kind-with-registry.sh and test/e2e/kind_registry.sh. The setup script creates/reuses a named kind cluster, creates/reuses a localhost registry, connects it to the kind Docker network, configures containerd mirrors for localhost and kind-registry refs, publishes Kubernetes Service/Endpoints for in-cluster Kaniko access, writes local-registry-hosting metadata, and can verify host push, node pull, and in-cluster registry reachability. The e2e helper exposes registry reference helpers and namespace Service/Endpoints setup.
+[2026-05-02T10:57:36Z] VALIDATION T031: bash -n hack/kind-with-registry.sh: passed; bash -n test/e2e/kind_registry.sh: passed; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./...: passed. hack/kind-with-registry.sh live setup was not completed: it exits before side effects with "[kind-registry] ERROR: required command not found: kind"; local kind cluster creation is also not allowed by AGENTS.md cluster safety in this environment.
+[2026-05-02T10:57:36Z] DONE T031: Script and helper are implemented. Live registry/cluster behavior still needs to be exercised in an allowed environment with kind installed.
+[2026-05-02T10:58:25Z] VALIDATION T031: Commit was not created because git add failed to create .git/index.lock in this sandbox: Operation not permitted.
+[2026-05-02T10:58:50Z] RALPH STOP max_iterations=1
+[2026-05-02T11:02:14Z] RALPH TOOLING_FIX: fixed Ralph priority ordering so higher task priority numbers run first. Reset T031 to queued because it was assigned out of order before T002; left the generated uncommitted scripts in place for reuse when T031 is reached intentionally.

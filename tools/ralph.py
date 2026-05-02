@@ -89,13 +89,13 @@ def deps_done(task: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> bool:
 
 
 def priority_key(task: Dict[str, Any]) -> Tuple[int, str]:
-    # Lower priority number goes first. Missing priority goes last.
-    raw_priority = task.get("priority", 9999)
+    # Higher priority number goes first. Missing priority goes last.
+    raw_priority = task.get("priority", -9999)
     try:
         priority = int(raw_priority)
     except (TypeError, ValueError):
-        priority = 9999
-    return priority, str(task.get("id", ""))
+        priority = -9999
+    return -priority, str(task.get("id", ""))
 
 
 def claim_next_task(data: Dict[str, Any], worker_id: str) -> Optional[Dict[str, Any]]:

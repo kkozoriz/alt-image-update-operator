@@ -1116,11 +1116,11 @@
       ],
       "implementation_notes": "Do not hide setup failures. If Docker, kind, or network access is unavailable, record the exact blocker in progress.txt.",
       "risk": "high",
-      "attempts": 0,
+      "attempts": 1,
       "assigned_to": null,
       "started_at": null,
       "completed_at": null,
-      "result_summary": null
+      "result_summary": "Reset to queued after Ralph assigned this out of order because priority sorting preferred lower numbers. Existing uncommitted script files may be reused when T031 is reached in the intended order."
     },
     {
       "id": "T032",
