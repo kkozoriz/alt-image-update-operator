@@ -1,18 +1,18 @@
 apiVersion: security.altlinux.org/v1alpha1
 kind: AltImageUpdatePolicy
 metadata:
-  labels:
-    app.kubernetes.io/name: alt-image-update-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: altimageupdatepolicy-sample
+  name: demo-app-alt-apt-simulation
 spec:
   alt:
     branch: p10
     baseImage: registry.altlinux.org/alt/alt:p10
+  trigger:
+    manualToken: demo-alt-apt-001
   check:
-    mode: Always
+    mode: AltAptSimulation
   build:
     builder: Kaniko
+    builderImage: gcr.io/kaniko-project/executor:v1.23.2
     outputImage: localhost:5001/alt/demo-app
     context:
       type: ConfigMap
@@ -24,3 +24,9 @@ spec:
     kind: Deployment
     name: demo-app
   containerName: app
+  rollout:
+    timeoutSeconds: 180
+  jobTemplate:
+    ttlSecondsAfterFinished: 300
+    backoffLimit: 0
+    activeDeadlineSeconds: 900
