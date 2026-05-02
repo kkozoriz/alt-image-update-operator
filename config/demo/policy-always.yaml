@@ -2,6 +2,7 @@ apiVersion: security.altlinux.org/v1alpha1
 kind: AltImageUpdatePolicy
 metadata:
   name: demo-app-always
+  namespace: alt-image-update-demo
 spec:
   alt:
     branch: p10

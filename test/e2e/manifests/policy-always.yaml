@@ -1,16 +1,15 @@
 apiVersion: security.altlinux.org/v1alpha1
 kind: AltImageUpdatePolicy
 metadata:
-  name: demo-app-alt-apt-simulation
-  namespace: alt-image-update-demo
+  name: demo-app-always
 spec:
   alt:
     branch: p10
     baseImage: registry.altlinux.org/alt/alt:p10
   trigger:
-    manualToken: demo-alt-apt-001
+    manualToken: e2e-always-001
   check:
-    mode: AltAptSimulation
+    mode: Always
   build:
     builder: Kaniko
     builderImage: gcr.io/kaniko-project/executor:v1.23.2
@@ -30,4 +29,4 @@ spec:
   jobTemplate:
     ttlSecondsAfterFinished: 300
     backoffLimit: 0
-    activeDeadlineSeconds: 900
+    activeDeadlineSeconds: 600

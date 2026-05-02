@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alt-image-update-demo
+  labels:
+    app.kubernetes.io/name: alt-image-update-demo
+    app.kubernetes.io/part-of: alt-image-update-operator
