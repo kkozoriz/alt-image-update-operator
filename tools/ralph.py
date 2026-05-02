@@ -162,6 +162,7 @@ def run_codex(
     codex_bin: str,
     project_root: Path,
     model: str,
+    reasoning_effort: str,
     sandbox: str,
     approval: str,
     prompt: str,
@@ -177,6 +178,8 @@ def run_codex(
         str(project_root),
         "--model",
         model,
+        "--config",
+        f'model_reasoning_effort="{reasoning_effort}"',
         "--sandbox",
         sandbox,
         "--output-last-message",
@@ -235,6 +238,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--progress", default="progress.txt", help="Path to progress.txt, relative to project root unless absolute")
     parser.add_argument("--worker-prompt", default="prompts/03_worker_prompt.md", help="Path to worker prompt")
     parser.add_argument("--model", default="gpt-5.5", help="Codex model, e.g. gpt-5.5 or gpt-5.4")
+    parser.add_argument("--reasoning-effort", default="high", choices=["low", "medium", "high", "xhigh"], help="Codex model reasoning effort for worker runs")
     parser.add_argument("--sandbox", default="workspace-write", choices=["read-only", "workspace-write", "danger-full-access"], help="Codex sandbox mode")
     parser.add_argument("--approval", default="never", choices=["untrusted", "on-request", "never"], help="Deprecated compatibility option; codex-cli 0.128.0 no longer accepts an approval flag for exec.")
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
@@ -274,7 +278,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ralph_dir.mkdir(parents=True, exist_ok=True)
 
     worker_id = f"ralph-{os.getpid()}"
-    append_progress(progress_path, f"RALPH START worker_id={worker_id} model={args.model}")
+    append_progress(progress_path, f"RALPH START worker_id={worker_id} model={args.model} reasoning_effort={args.reasoning_effort}")
 
     iteration = 0
     while True:
@@ -318,6 +322,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             codex_bin=codex_path,
             project_root=project_root,
             model=args.model,
+            reasoning_effort=args.reasoning_effort,
             sandbox=args.sandbox,
             approval=args.approval,
             prompt=prompt,
