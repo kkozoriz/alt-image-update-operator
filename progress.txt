@@ -6,3 +6,5 @@
 [2026-05-02T10:44:56Z] VALIDATION T001: gofmt -w cmd/main.go test/utils/utils.go test/e2e/e2e_suite_test.go test/e2e/e2e_test.go: passed; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./...: passed; same environment make manifests: passed. Installed bin/controller-gen locally from cached controller-tools v0.18.0 for validation because make could not download v0.20.1 without network and cannot write to the global module cache.
 [2026-05-02T10:45:32Z] VALIDATION T001: Also attempted bare go test ./... and make manifests. Both fail in this sandbox because Go tries to write /Users/konstantin/Library/Caches/go-build and receives operation not permitted; the sandbox-safe commands above passed.
 [2026-05-02T10:45:32Z] DONE T001: Kubebuilder/controller-runtime baseline compiles and manifests target runs. No product reconcile logic or CRD kind was implemented; that remains for dependent tasks.
+[2026-05-02T10:47:09Z] RALPH STOP max_iterations=1
+[2026-05-02T10:50:19Z] RALPH TOOLING_IMPROVEMENT: updated tools/ralph.py to stream Codex output to the terminal while preserving .ralph log files; added .ralph/ to .gitignore.
