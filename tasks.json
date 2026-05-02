@@ -934,7 +934,7 @@
     {
       "id": "T026",
       "title": "Set up envtest controller test harness",
-      "status": "queued",
+      "status": "done",
       "priority": 75,
       "dependencies": [
         "T003",
@@ -961,11 +961,12 @@
       ],
       "implementation_notes": "Envtest may simulate Job status by updating Kubernetes Job status objects; that is acceptable for controller tests. Do not use fake clients for paths that rely on API server status behavior.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-62910",
+      "started_at": "2026-05-02T14:37:22Z",
+      "completed_at": "2026-05-02T14:43:18Z",
+      "result_summary": "Added an envtest controller test harness that starts a local API server when kube-apiserver/etcd/kubectl assets are available, installs the generated AltImageUpdatePolicy CRD, configures the project scheme and real controller-runtime client, and skips envtest-only tests with a clear message when assets are missing. Added envtest tests covering CRD discovery, real status subresource behavior for AltImageUpdatePolicy, creation of Policies/Deployments/ConfigMaps/Jobs, Job status subresource simulation, and an Always-mode reconciler path that creates a build Job, observes completed Job status, and patches the target Deployment image through the real API server.",
+      "validation_result": "Passed: gofmt -w internal/controller/suite_test.go internal/controller/altimageupdatepolicy_controller_envtest_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller; same environment go test ./...; git diff --check. Also ran GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test -v ./internal/controller -run Envtest -count=1, which passed by skipping envtest-only tests with the explicit message that kube-apiserver, etcd, and kubectl binaries are missing."
     },
     {
       "id": "T027",
