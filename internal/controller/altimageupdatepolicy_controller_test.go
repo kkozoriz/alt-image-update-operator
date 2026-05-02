@@ -6,6 +6,7 @@ import (
 	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	operatordeploy "alt-image-update-operator/internal/deploy"
 	operatorimage "alt-image-update-operator/internal/image"
 	"alt-image-update-operator/internal/jobs"
 	"alt-image-update-operator/internal/run"
@@ -167,7 +168,7 @@ func TestReconcileRunningBuildJobKeepsBuildingAndRequeues(t *testing.T) {
 	}
 }
 
-func TestReconcileCompletedBuildJobRecordsBuiltImageAndNextStage(t *testing.T) {
+func TestReconcileCompletedBuildJobPatchesDeploymentAndRecordsAppliedImage(t *testing.T) {
 	ctx := context.Background()
 	policy := testPolicy()
 	buildJob := testBuildJobForPolicy(t, policy)
@@ -179,12 +180,17 @@ func TestReconcileCompletedBuildJobRecordsBuiltImageAndNextStage(t *testing.T) {
 			Message: "Job completed",
 		},
 	}
+	deployment := testDeployment("demo-app", "app", "sidecar")
+	deployment.Spec.Template.Annotations = map[string]string{"example.com/user": "kept"}
+	deployment.Spec.Template.Spec.Containers[1].Image = "registry.example.test/sidecar:v1"
 	reconciler := newTestReconciler(t,
 		policy,
-		testDeployment("demo-app", "app"),
+		deployment,
 		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
 		buildJob,
 	)
+	countingClient := &patchCountingClient{Client: reconciler.Client}
+	reconciler.Client = countingClient
 
 	result, err := reconciler.Reconcile(ctx, requestFor(policy))
 	if err != nil {
@@ -199,12 +205,40 @@ func TestReconcileCompletedBuildJobRecordsBuiltImageAndNextStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildReference returned error: %v", err)
 	}
-	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
-	if updated.Status.Phase != securityv1alpha1.PolicyPhaseApplying {
-		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseApplying)
+	if countingClient.patchCalls != 1 {
+		t.Fatalf("Patch calls = %d, want 1 Deployment patch", countingClient.patchCalls)
 	}
-	if updated.Status.Reason != reasonBuildJobCompleted {
-		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonBuildJobCompleted)
+
+	updatedDeployment := getDeployment(t, ctx, reconciler.Client, "demo-app")
+	if updatedDeployment.Spec.Template.Spec.Containers[0].Image != wantImage {
+		t.Fatalf("app image = %q, want %q", updatedDeployment.Spec.Template.Spec.Containers[0].Image, wantImage)
+	}
+	if updatedDeployment.Spec.Template.Spec.Containers[1].Image != "registry.example.test/sidecar:v1" {
+		t.Fatalf("sidecar image = %q, want unchanged sidecar image", updatedDeployment.Spec.Template.Spec.Containers[1].Image)
+	}
+	annotations := updatedDeployment.Spec.Template.Annotations
+	if annotations["example.com/user"] != "kept" {
+		t.Fatalf("user annotation = %q, want kept", annotations["example.com/user"])
+	}
+	if annotations[operatordeploy.AnnotationLastBuildID] != buildID {
+		t.Fatalf("last build id annotation = %q, want %q", annotations[operatordeploy.AnnotationLastBuildID], buildID)
+	}
+	if annotations[operatordeploy.AnnotationLastBuiltImage] != wantImage {
+		t.Fatalf("last built image annotation = %q, want %q", annotations[operatordeploy.AnnotationLastBuiltImage], wantImage)
+	}
+	if annotations[operatordeploy.AnnotationPolicyName] != policy.Name || annotations[operatordeploy.AnnotationPolicyNamespace] != policy.Namespace {
+		t.Fatalf("policy annotations = %#v, want policy identity", annotations)
+	}
+	if annotations[operatordeploy.AnnotationLastAppliedAt] == "" {
+		t.Fatalf("last applied annotation is empty, want timestamp")
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseRollingOut {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseRollingOut)
+	}
+	if updated.Status.Reason != reasonDeploymentPatched {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonDeploymentPatched)
 	}
 	if updated.Status.LastBuildJobName != buildJob.Name {
 		t.Fatalf("LastBuildJobName = %q, want %q", updated.Status.LastBuildJobName, buildJob.Name)
@@ -215,6 +249,15 @@ func TestReconcileCompletedBuildJobRecordsBuiltImageAndNextStage(t *testing.T) {
 	if updated.Status.LastBuildCompletionTime == nil {
 		t.Fatalf("LastBuildCompletionTime is nil, want completion timestamp")
 	}
+	if updated.Status.LastAppliedImage != wantImage {
+		t.Fatalf("LastAppliedImage = %q, want %q", updated.Status.LastAppliedImage, wantImage)
+	}
+	if updated.Status.LastApplyTime == nil {
+		t.Fatalf("LastApplyTime is nil, want apply timestamp")
+	}
+	if updated.Status.TargetDeploymentGeneration != updatedDeployment.Generation {
+		t.Fatalf("TargetDeploymentGeneration = %d, want %d", updated.Status.TargetDeploymentGeneration, updatedDeployment.Generation)
+	}
 
 	buildCompleted := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionBuildCompleted)
 	if buildCompleted == nil || buildCompleted.Status != metav1.ConditionTrue {
@@ -223,6 +266,67 @@ func TestReconcileCompletedBuildJobRecordsBuiltImageAndNextStage(t *testing.T) {
 	imagePublished := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionImagePublished)
 	if imagePublished == nil || imagePublished.Status != metav1.ConditionTrue {
 		t.Fatalf("ImagePublished condition = %#v, want True", imagePublished)
+	}
+	deploymentUpdated := findCondition(updated.Status.Conditions, securityv1alpha1.ConditionDeploymentUpdated)
+	if deploymentUpdated == nil || deploymentUpdated.Status != metav1.ConditionTrue {
+		t.Fatalf("DeploymentUpdated condition = %#v, want True", deploymentUpdated)
+	}
+}
+
+func TestReconcileCompletedBuildJobSkipsDeploymentPatchWhenAlreadyApplied(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	buildJob := testBuildJobForPolicy(t, policy)
+	buildJob.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:   batchv1.JobComplete,
+			Status: corev1.ConditionTrue,
+		},
+	}
+	buildID := run.BuildID(policy)
+	wantImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		t.Fatalf("BuildReference returned error: %v", err)
+	}
+
+	deployment := testDeployment("demo-app", "app")
+	deployment.Spec.Template.Spec.Containers[0].Image = wantImage
+	deployment.Spec.Template.Annotations = operatordeploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           wantImage,
+		BuildID:         buildID,
+		AppliedAt:       "2026-05-02T13:00:00Z",
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}.RequiredAnnotations()
+	reconciler := newTestReconciler(t,
+		policy,
+		deployment,
+		testConfigMap("demo-context", map[string]string{"Dockerfile": "FROM registry.altlinux.org/alt/alt:p10\n"}),
+		buildJob,
+	)
+	countingClient := &patchCountingClient{Client: reconciler.Client}
+	reconciler.Client = countingClient
+
+	if _, err := reconciler.Reconcile(ctx, requestFor(policy)); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if countingClient.patchCalls != 0 {
+		t.Fatalf("Patch calls = %d, want no Deployment patch", countingClient.patchCalls)
+	}
+
+	updated := getPolicy(t, ctx, reconciler.Client, policy.Name)
+	if updated.Status.Phase != securityv1alpha1.PolicyPhaseRollingOut {
+		t.Fatalf("Phase = %q, want %q", updated.Status.Phase, securityv1alpha1.PolicyPhaseRollingOut)
+	}
+	if updated.Status.Reason != reasonDeploymentAlreadyUpdated {
+		t.Fatalf("Reason = %q, want %q", updated.Status.Reason, reasonDeploymentAlreadyUpdated)
+	}
+	if updated.Status.LastAppliedImage != wantImage {
+		t.Fatalf("LastAppliedImage = %q, want %q", updated.Status.LastAppliedImage, wantImage)
+	}
+	if updated.Status.LastApplyTime == nil || updated.Status.LastApplyTime.Time.UTC().Format(time.RFC3339) != "2026-05-02T13:00:00Z" {
+		t.Fatalf("LastApplyTime = %v, want existing apply annotation timestamp", updated.Status.LastApplyTime)
 	}
 }
 
@@ -378,6 +482,16 @@ func newTestReconciler(t *testing.T, objects ...client.Object) *AltImageUpdatePo
 	}
 }
 
+type patchCountingClient struct {
+	client.Client
+	patchCalls int
+}
+
+func (c *patchCountingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	c.patchCalls++
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
 func testPolicy() *securityv1alpha1.AltImageUpdatePolicy {
 	return &securityv1alpha1.AltImageUpdatePolicy{
 		TypeMeta: metav1.TypeMeta{
@@ -489,6 +603,16 @@ func getPolicy(t *testing.T, ctx context.Context, c client.Client, name string) 
 		t.Fatalf("get policy: %v", err)
 	}
 	return &policy
+}
+
+func getDeployment(t *testing.T, ctx context.Context, c client.Client, name string) *appsv1.Deployment {
+	t.Helper()
+
+	var deployment appsv1.Deployment
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: name}, &deployment); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	return &deployment
 }
 
 func listJobs(t *testing.T, ctx context.Context, c client.Client) *batchv1.JobList {

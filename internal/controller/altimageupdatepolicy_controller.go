@@ -22,6 +22,7 @@ import (
 	"time"
 
 	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	"alt-image-update-operator/internal/deploy"
 	operatorimage "alt-image-update-operator/internal/image"
 	"alt-image-update-operator/internal/jobs"
 	"alt-image-update-operator/internal/run"
@@ -50,6 +51,8 @@ const (
 	reasonBuildJobRunning          = "BuildJobRunning"
 	reasonBuildJobCompleted        = "BuildJobCompleted"
 	reasonBuildJobFailed           = "BuildJobFailed"
+	reasonDeploymentPatched        = "DeploymentPatched"
+	reasonDeploymentAlreadyUpdated = "DeploymentAlreadyUpdated"
 
 	buildJobRequeueAfter = 5 * time.Second
 )
@@ -149,19 +152,39 @@ func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 
 		if complete := findJobCondition(buildJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
-			message := fmt.Sprintf("Build Job %q completed and published image %q", buildJob.Name, builtImage)
-			operatorstatus.MarkApplying(&policy.Status, policy.Generation, now, reasonBuildJobCompleted, message)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, message, now)
-			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, message, now)
+			buildMessage := fmt.Sprintf("Build Job %q completed and published image %q", buildJob.Name, builtImage)
+			operatorstatus.MarkApplying(&policy.Status, policy.Generation, now, reasonBuildJobCompleted, buildMessage)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
 			policy.Status.LastBuiltImage = builtImage
 			if policy.Status.LastBuildCompletionTime == nil || originalStatus.LastBuiltImage != builtImage || originalStatus.LastBuildJobName != buildJob.Name {
 				policy.Status.LastBuildCompletionTime = &now
 			}
+
+			deploymentPatched, appliedAt, err := r.applyBuiltImageToDeployment(ctx, &deployment, &policy, builtImage, buildID, now)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			applyReason := reasonDeploymentAlreadyUpdated
+			applyMessage := fmt.Sprintf("Deployment %q already uses image %q with required policy annotations", deployment.Name, builtImage)
+			if deploymentPatched {
+				applyReason = reasonDeploymentPatched
+				applyMessage = fmt.Sprintf("Patched Deployment %q container %q to image %q", deployment.Name, policy.Spec.ContainerName, builtImage)
+			}
+			operatorstatus.MarkRollout(&policy.Status, policy.Generation, now, applyReason, applyMessage)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionDeploymentUpdated, metav1.ConditionTrue, applyReason, applyMessage, now)
+			policy.Status.LastAppliedImage = builtImage
+			policy.Status.TargetDeploymentGeneration = deployment.Generation
+			if policy.Status.LastApplyTime == nil || originalStatus.LastAppliedImage != builtImage || deploymentPatched {
+				policy.Status.LastApplyTime = appliedAt
+			}
+
 			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
 				return ctrl.Result{}, err
 			}
 
-			logger.V(1).Info("AltImageUpdatePolicy build Job completed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name)
+			logger.V(1).Info("AltImageUpdatePolicy applied built image to Deployment", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJob.Name, "deployment", deployment.Name, "patched", deploymentPatched)
 			return ctrl.Result{}, nil
 		}
 
@@ -241,6 +264,60 @@ func (r *AltImageUpdatePolicyReconciler) ensureBuildJob(ctx context.Context, pol
 	}
 
 	return &existing, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) applyBuiltImageToDeployment(ctx context.Context, deployment *appsv1.Deployment, policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, now metav1.Time) (bool, *metav1.Time, error) {
+	appliedAt := deploymentAppliedAt(deployment, policy, builtImage, buildID, now)
+	patch := deploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           builtImage,
+		BuildID:         buildID,
+		AppliedAt:       appliedAt.Time.UTC().Format(time.RFC3339),
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}
+
+	before := deployment.DeepCopy()
+	changed, err := deploy.ApplyImagePatch(deployment, patch)
+	if err != nil {
+		return false, nil, err
+	}
+	if !changed {
+		return false, appliedAt, nil
+	}
+	if err := r.Patch(ctx, deployment, client.StrategicMergeFrom(before)); err != nil {
+		return false, nil, err
+	}
+	return true, appliedAt, nil
+}
+
+func deploymentAppliedAt(deployment *appsv1.Deployment, policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, now metav1.Time) *metav1.Time {
+	if deployment != nil && deploymentContainerImage(deployment, policy.Spec.ContainerName) == builtImage {
+		annotations := deployment.Spec.Template.Annotations
+		if annotations[deploy.AnnotationLastBuildID] == buildID &&
+			annotations[deploy.AnnotationLastBuiltImage] == builtImage &&
+			annotations[deploy.AnnotationPolicyName] == policy.Name &&
+			annotations[deploy.AnnotationPolicyNamespace] == policy.Namespace &&
+			annotations[deploy.AnnotationLastAppliedAt] != "" {
+			if parsed, err := time.Parse(time.RFC3339, annotations[deploy.AnnotationLastAppliedAt]); err == nil {
+				return &metav1.Time{Time: parsed.UTC()}
+			}
+		}
+	}
+
+	return &now
+}
+
+func deploymentContainerImage(deployment *appsv1.Deployment, containerName string) string {
+	if deployment == nil {
+		return ""
+	}
+	for i := range deployment.Spec.Template.Spec.Containers {
+		if deployment.Spec.Template.Spec.Containers[i].Name == containerName {
+			return deployment.Spec.Template.Spec.Containers[i].Image
+		}
+	}
+	return ""
 }
 
 func findJobCondition(job *batchv1.Job, conditionType batchv1.JobConditionType) *batchv1.JobCondition {

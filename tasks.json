@@ -634,7 +634,7 @@
     {
       "id": "T018",
       "title": "Patch target Deployment after successful build",
-      "status": "queued",
+      "status": "done",
       "priority": 83,
       "dependencies": [
         "T012",
@@ -661,11 +661,12 @@
       ],
       "implementation_notes": "Use Kubernetes patch/update carefully to avoid overwriting user changes made between reads.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-31475",
+      "started_at": "2026-05-02T12:59:44Z",
+      "completed_at": "2026-05-02T13:03:27Z",
+      "result_summary": "Updated Always-mode reconcile so a completed Build Job applies the built image to the target Deployment container using the existing Deployment patch helper and controller-runtime StrategicMergeFrom patching. The controller now records lastAppliedImage, lastApplyTime, targetDeploymentGeneration, DeploymentUpdated=True, and moves to RollingOut. Added controller tests for target-only image patching with required annotations and for skipping Deployment patch when the desired image and annotations are already present.",
+      "validation_result": "Passed: gofmt -w internal/controller/altimageupdatepolicy_controller.go internal/deploy/patch.go internal/controller/altimageupdatepolicy_controller_test.go; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/controller ./internal/deploy; same environment go test ./..."
     },
     {
       "id": "T019",
