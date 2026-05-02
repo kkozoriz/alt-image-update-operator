@@ -1120,7 +1120,7 @@
     {
       "id": "T031",
       "title": "Add kind local registry setup script",
-      "status": "queued",
+      "status": "skipped",
       "priority": 70,
       "dependencies": [
         "T001"
@@ -1145,26 +1145,26 @@
       ],
       "implementation_notes": "Do not hide setup failures. If Docker, kind, or network access is unavailable, record the exact blocker in progress.txt.",
       "risk": "high",
-      "attempts": 3,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": "Reset to queued after manual interruption before implementation. Ralph was patched to stop on blocked/failed task status before this task is retried."
+      "attempts": 4,
+      "assigned_to": "user-skip",
+      "started_at": "2026-05-02T14:59:08Z",
+      "completed_at": "2026-05-02T15:08:57Z",
+      "result_summary": "Skipped by user decision because this project will use the explicitly allowed remote minikube target instead of creating a local kind cluster. The uncommitted kind helper implementation was discarded, and dependent e2e tasks were redirected to remote minikube.",
+      "validation_result": "Skipped: local kind cluster setup is intentionally out of scope for this run. E2E validation must use KUBECONFIG=$HOME/.kube-remote/minikube-config against the allowed remote minikube."
     },
     {
       "id": "T032",
-      "title": "Implement e2e script for Always full pipeline",
+      "title": "Implement e2e script for remote minikube Always full pipeline",
       "status": "queued",
       "priority": 69,
       "dependencies": [
         "T019",
         "T024",
-        "T030",
-        "T031"
+        "T030"
       ],
       "area": "e2e",
       "estimated_session": "large",
-      "description": "Add a real e2e script that installs CRDs/controller, applies demo manifests, waits for Kaniko Build Job completion, verifies registry push, verifies Deployment update, verifies rollout, and verifies CR status.",
+      "description": "Add a real e2e script for the explicitly allowed remote minikube target that installs CRDs/controller, applies demo manifests, waits for Kaniko Build Job completion, verifies registry push, verifies Deployment update, verifies rollout, and verifies CR status.",
       "files": [
         "hack/e2e.sh",
         "Makefile",
@@ -1181,9 +1181,9 @@
       "validation": [
         "bash -n hack/e2e.sh",
         "go test ./...",
-        "hack/e2e.sh"
+        "KUBECONFIG=$HOME/.kube-remote/minikube-config hack/e2e.sh"
       ],
-      "implementation_notes": "No fake status patching and no echo-only build. The e2e must prove CRD + controller + Kubernetes Job + real Kaniko build + push + Deployment update.",
+      "implementation_notes": "No fake status patching and no echo-only build. Do not use the developer laptop default kubeconfig. The e2e must require an explicit KUBECONFIG that targets the allowed remote minikube and should use the remote minikube registry addon or a documented remote-minikube registry path.",
       "risk": "high",
       "attempts": 0,
       "assigned_to": null,
@@ -1218,9 +1218,9 @@
       "validation": [
         "bash -n hack/e2e.sh",
         "go test ./...",
-        "hack/e2e.sh"
+        "KUBECONFIG=$HOME/.kube-remote/minikube-config hack/e2e.sh"
       ],
-      "implementation_notes": "The e2e may accept either UpdatesAvailable or NoUpdates depending on the current ALT base image state, but it must verify the controller's branch is consistent with Check Job logs.",
+      "implementation_notes": "The e2e may accept either UpdatesAvailable or NoUpdates depending on the current ALT base image state, but it must verify the controller's branch is consistent with Check Job logs. It must use the explicit remote minikube kubeconfig and must not use the developer laptop default kubeconfig.",
       "risk": "high",
       "attempts": 0,
       "assigned_to": null,
@@ -1273,7 +1273,7 @@
       ],
       "area": "docs",
       "estimated_session": "medium",
-      "description": "Write thesis-demo oriented documentation with exact commands for e2e, manual demo, and common failure diagnosis.",
+      "description": "Write thesis-demo oriented documentation with exact commands for remote-minikube e2e, manual demo, and common failure diagnosis.",
       "files": [
         "docs/demo.md",
         "docs/troubleshooting.md",
@@ -1287,7 +1287,7 @@
       ],
       "validation": [
         "go test ./...",
-        "hack/e2e.sh"
+        "KUBECONFIG=$HOME/.kube-remote/minikube-config hack/e2e.sh"
       ],
       "implementation_notes": "If e2e cannot run in the current environment, document the exact missing tool or cluster issue in progress.txt and still validate markdown commands by inspection.",
       "risk": "medium",
@@ -1370,13 +1370,13 @@
         "make generate",
         "make manifests",
         "go test ./...",
-        "kubectl apply -k config/default",
-        "hack/e2e.sh",
-        "kubectl get crd altimageupdatepolicies.security.altlinux.org",
-        "kubectl get aiup demo-app-policy -n alt-update-demo -o jsonpath='{.status.phase}'",
-        "kubectl rollout status deployment/demo-app -n alt-update-demo"
+        "kubectl --kubeconfig $HOME/.kube-remote/minikube-config apply -k config/default",
+        "KUBECONFIG=$HOME/.kube-remote/minikube-config hack/e2e.sh",
+        "kubectl --kubeconfig $HOME/.kube-remote/minikube-config get crd altimageupdatepolicies.security.altlinux.org",
+        "kubectl --kubeconfig $HOME/.kube-remote/minikube-config get aiup demo-app-policy -n alt-update-demo -o jsonpath='{.status.phase}'",
+        "kubectl --kubeconfig $HOME/.kube-remote/minikube-config rollout status deployment/demo-app -n alt-update-demo"
       ],
-      "implementation_notes": "Do not mark the MVP complete if real build, push, Deployment update, or rollout verification fails.",
+      "implementation_notes": "Do not mark the MVP complete if real build, push, Deployment update, or rollout verification fails. Use only the explicitly allowed remote minikube kubeconfig for live-cluster acceptance.",
       "risk": "high",
       "attempts": 0,
       "assigned_to": null,
