@@ -38,6 +38,7 @@
 - Не помечай задачу `done`, если acceptance criteria не выполнены.
 - Не помечай задачу `done`, если обязательная validation command из задачи не была выполнена успешно. Если команда требует отсутствующий инструмент или запрещенный live cluster, используй `blocked` или `failed` согласно причине, а не `done`.
 - Не помечай задачу `done`, если не удалось создать требуемый git commit. Зафиксируй причину в `progress.txt` и оставь задачу `blocked` или `failed`.
+- Перед `git add` и `git commit` обязательно запиши все финальные изменения в `tasks.json` и `progress.txt`, включая строки `VALIDATION` и `DONE`/`BLOCKED`/`FAILED`. После успешного commit не изменяй tracked файлы и не делай amend только ради журнала.
 - Если нужно принять техническое решение, выбери простое, идиоматичное для Kubernetes/operator-sdk/Kubebuilder решение и запиши его в progress.
 - Используй gofmt/go test. Для YAML используй валидный Kubernetes YAML.
 
