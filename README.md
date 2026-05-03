@@ -129,6 +129,8 @@ hack/e2e.sh
 
 The script installs CRDs, starts the controller manager locally against the allowed remote minikube, applies the demo manifests, verifies a real Kaniko build and registry push, checks the Deployment image and rollout, and then runs the `AltAptSimulation` path.
 
+For a step-by-step thesis demo runbook with expected `kubectl` outputs, see [docs/demo.md](docs/demo.md). For failure diagnosis, see [docs/troubleshooting.md](docs/troubleshooting.md).
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the implemented reconcile state machine, Job model, Deployment patch behavior, status fields, and MVP limitations.

@@ -1268,7 +1268,7 @@
     {
       "id": "T035",
       "title": "Document demo and troubleshooting workflow",
-      "status": "queued",
+      "status": "done",
       "priority": 66,
       "dependencies": [
         "T032",
@@ -1294,11 +1294,12 @@
       ],
       "implementation_notes": "If e2e cannot run in the current environment, document the exact missing tool or cluster issue in progress.txt and still validate markdown commands by inspection.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 2,
+      "assigned_to": "codex-review",
+      "started_at": "2026-05-03T12:33:47Z",
+      "completed_at": "2026-05-03T12:44:24Z",
+      "result_summary": "Added docs/demo.md with remote-minikube e2e runbook, manual clean-cluster demo steps, expected kubectl outputs, Build Job/Kaniko/registry/Deployment/rollout/status checks, and an optional controller Pod path. Added docs/troubleshooting.md covering registry availability, Kaniko push failures, Deployment pull failures, Check Job failures, ConfigMap and Dockerfile-key errors, rollout timeouts, and manualToken retries. Linked the docs from README.md. Parent review corrected expected Job name examples to match the implemented aiuo-build/aiuo-check naming and committed after Ralph was blocked by git index permissions.",
+      "validation_result": "Passed: bash -n hack/e2e.sh; ruby JSON parse for tasks.json; ASCII check for README.md docs/demo.md docs/troubleshooting.md; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./...; git diff --check. Ralph also passed KUBECONFIG=/Users/konstantin/.kube-remote/minikube-config E2E_REGISTRY_FORWARD_PORT=5021 hack/e2e.sh against the explicitly allowed remote minikube for Always and AltAptSimulation."
     },
     {
       "id": "T036",
