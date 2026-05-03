@@ -1233,7 +1233,7 @@
     {
       "id": "T034",
       "title": "Document architecture and API usage",
-      "status": "queued",
+      "status": "done",
       "priority": 67,
       "dependencies": [
         "T003",
@@ -1258,11 +1258,12 @@
       ],
       "implementation_notes": "Keep docs aligned with actual field names and command names in the repository. Do not document future features as implemented.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 2,
+      "assigned_to": "codex-review",
+      "started_at": "2026-05-03T12:24:16Z",
+      "completed_at": "2026-05-03T12:31:50Z",
+      "result_summary": "Replaced README.md with product-specific usage documentation and added docs/architecture.md covering CRD fields, reconcile state machine, real Check and Build Jobs, registry push, Deployment patching, rollout observation, status, events, RBAC, e2e workflow, and MVP limitations. Parent review confirmed the docs are aligned with implemented field names and committed the validated changes after Ralph was blocked by git index permissions.",
+      "validation_result": "Passed: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./...; GOCACHE=$PWD/.gocache/build make manifests; git diff --check; ruby JSON parse for tasks.json."
     },
     {
       "id": "T035",
