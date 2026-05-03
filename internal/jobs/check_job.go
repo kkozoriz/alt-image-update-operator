@@ -15,7 +15,7 @@ import (
 const (
 	CheckContainerName = "alt-apt-simulation"
 
-	checkCommand = "apt-get update && apt-get -s dist-upgrade"
+	checkCommand = "printf '%s\n' 'RUN apt-get update' && apt-get update && printf '%s\n' 'RUN apt-get -s dist-upgrade' && apt-get -s dist-upgrade"
 )
 
 // CheckJobOptions contains controller-computed values for one check run.

@@ -1195,7 +1195,7 @@
     {
       "id": "T033",
       "title": "Extend e2e coverage for AltAptSimulation",
-      "status": "queued",
+      "status": "done",
       "priority": 68,
       "dependencies": [
         "T023",
@@ -1223,11 +1223,12 @@
       ],
       "implementation_notes": "The e2e may accept either UpdatesAvailable or NoUpdates depending on the current ALT base image state, but it must verify the controller's branch is consistent with Check Job logs. It must use the explicit remote minikube kubeconfig and must not use the developer laptop default kubeconfig.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 2,
+      "assigned_to": "codex-review",
+      "started_at": "2026-05-03T11:37:30Z",
+      "completed_at": "2026-05-03T12:22:41Z",
+      "result_summary": "Extended hack/e2e.sh with a second remote-minikube AltAptSimulation scenario that applies a dedicated policy, waits for the real Check Job labeled security.altlinux.org/job-type=check, reads alt-apt-simulation container logs, verifies apt-get update and apt-get -s dist-upgrade evidence, classifies the logs, and verifies either UpdatesAvailable build/rollout continuation or NoUpdates UpToDate/no-Build-Job behavior. Added test/e2e/manifests/policy-alt-apt-simulation.yaml. Review hardened the e2e script to build and run a dedicated manager binary instead of go run, detect failed Jobs quickly, wait for registry endpoints, and reset registry storage between scenarios for the small remote minikube disk.",
+      "validation_result": "Passed: bash -n hack/e2e.sh; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/jobs; same environment go test ./...; ruby YAML parse for test/e2e/manifests/policy-alt-apt-simulation.yaml and config/demo/policy-alt-apt-simulation.yaml; ruby JSON parse for tasks.json; git diff --check; KUBECONFIG=/Users/konstantin/.kube-remote/minikube-config E2E_REGISTRY_FORWARD_PORT=5021 hack/e2e.sh passed against the explicitly allowed remote minikube. The live e2e verified Always build/rollout, registry reset, AltAptSimulation Check Job logs, UpdatesAvailable classification, second Kaniko Build Job, registry tag, Deployment update, rollout, and policy phase Succeeded."
     },
     {
       "id": "T034",
