@@ -135,6 +135,12 @@ func TestNewBuildJobAppliesTemplateOverridesAndRegistrySecretMount(t *testing.T)
 	if job.Spec.Template.Spec.ServiceAccountName != "image-builder" {
 		t.Fatalf("serviceAccountName = %q, want image-builder", job.Spec.Template.Spec.ServiceAccountName)
 	}
+	if job.Spec.Template.Spec.HostNetwork {
+		t.Fatal("hostNetwork = true, want false by default")
+	}
+	if job.Spec.Template.Spec.DNSPolicy != corev1.DNSClusterFirst {
+		t.Fatalf("dnsPolicy = %q, want %q", job.Spec.Template.Spec.DNSPolicy, corev1.DNSClusterFirst)
+	}
 	if got := derefInt32(job.Spec.TTLSecondsAfterFinished); got != ttl {
 		t.Fatalf("ttlSecondsAfterFinished = %d, want %d", got, ttl)
 	}
@@ -158,6 +164,23 @@ func TestNewBuildJobAppliesTemplateOverridesAndRegistrySecretMount(t *testing.T)
 		}
 	})
 	assertMount(t, onlyBuildContainer(t, job).VolumeMounts, dockerConfigVolumeName, DockerConfigMountPath, true)
+}
+
+func TestNewBuildJobAppliesHostNetworkOverride(t *testing.T) {
+	policy := testBuildPolicy()
+	policy.Spec.JobTemplate.HostNetwork = true
+
+	job, err := NewBuildJob(policy, testBuildJobOptions())
+	if err != nil {
+		t.Fatalf("NewBuildJob() error = %v", err)
+	}
+
+	if !job.Spec.Template.Spec.HostNetwork {
+		t.Fatal("hostNetwork = false, want true")
+	}
+	if job.Spec.Template.Spec.DNSPolicy != corev1.DNSClusterFirstWithHostNet {
+		t.Fatalf("dnsPolicy = %q, want %q", job.Spec.Template.Spec.DNSPolicy, corev1.DNSClusterFirstWithHostNet)
+	}
 }
 
 func TestNewBuildJobSetsConservativeResourceDefaults(t *testing.T) {

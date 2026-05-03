@@ -1155,7 +1155,7 @@
     {
       "id": "T032",
       "title": "Implement e2e script for remote minikube Always full pipeline",
-      "status": "queued",
+      "status": "done",
       "priority": 69,
       "dependencies": [
         "T019",
@@ -1185,11 +1185,12 @@
       ],
       "implementation_notes": "No fake status patching and no echo-only build. Do not use the developer laptop default kubeconfig. The e2e must require an explicit KUBECONFIG that targets the allowed remote minikube and should use the remote minikube registry addon or a documented remote-minikube registry path.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 2,
+      "assigned_to": "codex-review",
+      "started_at": "2026-05-02T15:10:32Z",
+      "completed_at": "2026-05-03T11:05:49Z",
+      "result_summary": "Added hack/e2e.sh for the remote-minikube Always pipeline. The script enforces the allowed kubeconfig, verifies the remote minikube identity, uses the minikube registry addon, installs generated CRDs, starts the real controller manager locally, applies the demo Deployment/ConfigMap/Always policy, waits for the real Kaniko Build Job, verifies registry tags, Deployment image, rollout, and Succeeded CR status. Follow-up review fixed the remote-minikube registry wiring by adding optional jobTemplate.hostNetwork support and using localhost:5000 for the e2e image reference so Kaniko and kubelet use the same node-local registry endpoint.",
+      "validation_result": "Passed: bash -n hack/e2e.sh; GOCACHE=$PWD/.gocache/build make generate; GOCACHE=$PWD/.gocache/build make manifests; GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build go test ./internal/jobs; same environment go test ./...; KUBECONFIG=/Users/konstantin/.kube-remote/minikube-config hack/e2e.sh completed against the explicitly allowed remote minikube and verified Kaniko build/push, registry tag, Deployment image update, rollout, and policy phase Succeeded."
     },
     {
       "id": "T033",

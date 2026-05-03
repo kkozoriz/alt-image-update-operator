@@ -183,6 +183,11 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
+                  hostNetwork:
+                    description: |-
+                      HostNetwork runs check and build Pods on the node network.
+                      This is useful for demo clusters that expose a node-local registry such as localhost:5000.
+                    type: boolean
                   serviceAccountName:
                     description: ServiceAccountName is assigned to check and build
                       Pods.

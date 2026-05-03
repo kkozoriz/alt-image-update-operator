@@ -241,6 +241,11 @@ type JobTemplateSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
+	// HostNetwork runs check and build Pods on the node network.
+	// This is useful for demo clusters that expose a node-local registry such as localhost:5000.
+	// +optional
+	HostNetwork bool `json:"hostNetwork,omitempty"`
+
 	// TTLSecondsAfterFinished sets the cleanup TTL for completed Jobs.
 	// +optional
 	// +kubebuilder:validation:Minimum=0

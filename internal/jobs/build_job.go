@@ -96,6 +96,8 @@ func NewBuildJob(policy *securityv1alpha1.AltImageUpdatePolicy, opts BuildJobOpt
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: jobServiceAccountName(policy),
+					HostNetwork:        jobHostNetwork(policy),
+					DNSPolicy:          jobDNSPolicy(policy),
 					RestartPolicy:      corev1.RestartPolicyNever,
 					Containers: []corev1.Container{
 						{
@@ -237,6 +239,17 @@ func jobServiceAccountName(policy *securityv1alpha1.AltImageUpdatePolicy) string
 		return serviceAccountName
 	}
 	return DefaultJobServiceAccountName
+}
+
+func jobHostNetwork(policy *securityv1alpha1.AltImageUpdatePolicy) bool {
+	return policy.Spec.JobTemplate.HostNetwork
+}
+
+func jobDNSPolicy(policy *securityv1alpha1.AltImageUpdatePolicy) corev1.DNSPolicy {
+	if jobHostNetwork(policy) {
+		return corev1.DNSClusterFirstWithHostNet
+	}
+	return corev1.DNSClusterFirst
 }
 
 func jobTTLSeconds(policy *securityv1alpha1.AltImageUpdatePolicy) int32 {

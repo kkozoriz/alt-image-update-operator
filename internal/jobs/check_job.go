@@ -68,6 +68,8 @@ func NewCheckJob(policy *securityv1alpha1.AltImageUpdatePolicy, opts CheckJobOpt
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: jobServiceAccountName(policy),
+					HostNetwork:        jobHostNetwork(policy),
+					DNSPolicy:          jobDNSPolicy(policy),
 					RestartPolicy:      corev1.RestartPolicyNever,
 					SecurityContext: &corev1.PodSecurityContext{
 						SeccompProfile: &corev1.SeccompProfile{

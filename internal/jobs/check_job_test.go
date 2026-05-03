@@ -89,6 +89,12 @@ func TestNewCheckJobAppliesTemplateDefaultsAndOverrides(t *testing.T) {
 	if job.Spec.Template.Spec.ServiceAccountName != DefaultJobServiceAccountName {
 		t.Fatalf("default serviceAccountName = %q, want %q", job.Spec.Template.Spec.ServiceAccountName, DefaultJobServiceAccountName)
 	}
+	if job.Spec.Template.Spec.HostNetwork {
+		t.Fatal("default hostNetwork = true, want false")
+	}
+	if job.Spec.Template.Spec.DNSPolicy != corev1.DNSClusterFirst {
+		t.Fatalf("default dnsPolicy = %q, want %q", job.Spec.Template.Spec.DNSPolicy, corev1.DNSClusterFirst)
+	}
 	if got := derefInt32(job.Spec.BackoffLimit); got != DefaultJobBackoffLimit {
 		t.Fatalf("default backoffLimit = %d, want %d", got, DefaultJobBackoffLimit)
 	}
@@ -103,6 +109,7 @@ func TestNewCheckJobAppliesTemplateDefaultsAndOverrides(t *testing.T) {
 	backoff := int32(1)
 	deadline := int64(600)
 	policy.Spec.JobTemplate.ServiceAccountName = "alt-checker"
+	policy.Spec.JobTemplate.HostNetwork = true
 	policy.Spec.JobTemplate.TTLSecondsAfterFinished = &ttl
 	policy.Spec.JobTemplate.BackoffLimit = &backoff
 	policy.Spec.JobTemplate.ActiveDeadlineSeconds = &deadline
@@ -113,6 +120,12 @@ func TestNewCheckJobAppliesTemplateDefaultsAndOverrides(t *testing.T) {
 	}
 	if job.Spec.Template.Spec.ServiceAccountName != "alt-checker" {
 		t.Fatalf("serviceAccountName = %q, want alt-checker", job.Spec.Template.Spec.ServiceAccountName)
+	}
+	if !job.Spec.Template.Spec.HostNetwork {
+		t.Fatal("hostNetwork = false, want true")
+	}
+	if job.Spec.Template.Spec.DNSPolicy != corev1.DNSClusterFirstWithHostNet {
+		t.Fatalf("dnsPolicy = %q, want %q", job.Spec.Template.Spec.DNSPolicy, corev1.DNSClusterFirstWithHostNet)
 	}
 	if got := derefInt32(job.Spec.TTLSecondsAfterFinished); got != ttl {
 		t.Fatalf("ttlSecondsAfterFinished = %d, want %d", got, ttl)
