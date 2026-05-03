@@ -1,0 +1,19 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: altimageupdatepolicy-viewer-role
+rules:
+- apiGroups:
+  - security.altlinux.org
+  resources:
+  - altimageupdatepolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - security.altlinux.org
+  resources:
+  - altimageupdatepolicies/status
+  verbs:
+  - get

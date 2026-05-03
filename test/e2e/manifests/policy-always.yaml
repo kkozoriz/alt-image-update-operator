@@ -1,0 +1,33 @@
+apiVersion: security.altlinux.org/v1alpha1
+kind: AltImageUpdatePolicy
+metadata:
+  name: demo-app-always
+spec:
+  alt:
+    branch: p10
+    baseImage: registry.altlinux.org/alt/alt:p10
+  trigger:
+    manualToken: e2e-always-001
+  check:
+    mode: Always
+  build:
+    builder: Kaniko
+    builderImage: gcr.io/kaniko-project/executor:v1.23.2
+    outputImage: localhost:5001/alt/demo-app
+    context:
+      type: ConfigMap
+      configMapRef:
+        name: demo-app-context
+        dockerfileKey: Dockerfile
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-app
+  containerName: app
+  rollout:
+    timeoutSeconds: 180
+  jobTemplate:
+    hostNetwork: true
+    ttlSecondsAfterFinished: 300
+    backoffLimit: 0
+    activeDeadlineSeconds: 600

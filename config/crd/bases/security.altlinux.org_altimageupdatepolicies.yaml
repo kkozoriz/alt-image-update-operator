@@ -1,0 +1,400 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: (devel)
+  name: altimageupdatepolicies.security.altlinux.org
+spec:
+  group: security.altlinux.org
+  names:
+    kind: AltImageUpdatePolicy
+    listKind: AltImageUpdatePolicyList
+    plural: altimageupdatepolicies
+    singular: altimageupdatepolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Target
+      type: string
+    - jsonPath: .status.lastBuiltImage
+      name: BuiltImage
+      type: string
+    - jsonPath: .status.lastAppliedImage
+      name: AppliedImage
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AltImageUpdatePolicy is the Schema for the altimageupdatepolicies
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AltImageUpdatePolicySpec defines the desired state of AltImageUpdatePolicy.
+            properties:
+              alt:
+                description: Alt describes the ALT Linux base image and package branch
+                  used by the policy.
+                properties:
+                  baseImage:
+                    description: BaseImage is the ALT Linux image used by check jobs
+                      and exposed to build jobs.
+                    minLength: 1
+                    pattern: ^\S+$
+                    type: string
+                  branch:
+                    description: Branch is the ALT Linux package branch.
+                    enum:
+                    - p10
+                    - p11
+                    - sisyphus
+                    type: string
+                required:
+                - baseImage
+                - branch
+                type: object
+              build:
+                description: Build describes the image build and push configuration.
+                properties:
+                  builder:
+                    description: Builder selects the build backend. MVP supports only
+                      Kaniko.
+                    enum:
+                    - Kaniko
+                    type: string
+                  builderImage:
+                    description: BuilderImage overrides the Kaniko executor image.
+                    minLength: 1
+                    pattern: ^\S+$
+                    type: string
+                  context:
+                    description: Context describes where the build context comes from.
+                    properties:
+                      configMapRef:
+                        description: ConfigMapRef references the ConfigMap containing
+                          the build context.
+                        properties:
+                          dockerfileKey:
+                            description: DockerfileKey is the ConfigMap data key containing
+                              the Dockerfile.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the ConfigMap name.
+                            minLength: 1
+                            type: string
+                        required:
+                        - dockerfileKey
+                        - name
+                        type: object
+                      type:
+                        description: Type selects the build context source. MVP supports
+                          only ConfigMap.
+                        enum:
+                        - ConfigMap
+                        type: string
+                    required:
+                    - configMapRef
+                    - type
+                    type: object
+                  outputImage:
+                    description: OutputImage is the destination image repository,
+                      with an optional tag replaced by the controller build tag.
+                    minLength: 1
+                    pattern: ^\S+$
+                    type: string
+                  registrySecretRef:
+                    description: RegistrySecretRef points to a Secret containing Docker
+                      registry credentials.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  tagTemplate:
+                    description: TagTemplate optionally customizes the generated image
+                      tag.
+                    type: string
+                required:
+                - builder
+                - context
+                - outputImage
+                type: object
+              check:
+                description: Check controls whether the policy always rebuilds or
+                  first checks ALT package updates.
+                properties:
+                  mode:
+                    description: Mode is the check strategy.
+                    enum:
+                    - Always
+                    - AltAptSimulation
+                    type: string
+                required:
+                - mode
+                type: object
+              containerName:
+                description: ContainerName is the Deployment container whose image
+                  should be updated.
+                minLength: 1
+                type: string
+              jobTemplate:
+                description: JobTemplate contains common settings for check and build
+                  Jobs created by the controller.
+                properties:
+                  activeDeadlineSeconds:
+                    description: ActiveDeadlineSeconds limits Job runtime.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  backoffLimit:
+                    description: BackoffLimit controls Job retry count.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  hostNetwork:
+                    description: |-
+                      HostNetwork runs check and build Pods on the node network.
+                      This is useful for demo clusters that expose a node-local registry such as localhost:5000.
+                    type: boolean
+                  serviceAccountName:
+                    description: ServiceAccountName is assigned to check and build
+                      Pods.
+                    minLength: 1
+                    type: string
+                  ttlSecondsAfterFinished:
+                    description: TTLSecondsAfterFinished sets the cleanup TTL for
+                      completed Jobs.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              rollout:
+                description: Rollout controls Deployment rollout observation.
+                properties:
+                  timeoutSeconds:
+                    description: TimeoutSeconds is the maximum time to wait for Deployment
+                      rollout completion.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              targetRef:
+                description: TargetRef identifies the Deployment updated by this policy.
+                  It must be in the same namespace as the policy.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target. MVP
+                      supports only apps/v1.
+                    enum:
+                    - apps/v1
+                    type: string
+                  kind:
+                    description: Kind is the target kind. MVP supports only Deployment.
+                    enum:
+                    - Deployment
+                    type: string
+                  name:
+                    description: Name is the target Deployment name.
+                    minLength: 1
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              trigger:
+                description: Trigger contains user-controlled inputs that start a
+                  new policy run.
+                properties:
+                  manualToken:
+                    description: ManualToken starts a new policy run when changed.
+                    type: string
+                type: object
+            required:
+            - alt
+            - build
+            - check
+            - containerName
+            - targetRef
+            type: object
+          status:
+            description: AltImageUpdatePolicyStatus defines the observed state of
+              AltImageUpdatePolicy.
+            properties:
+              buildID:
+                description: BuildID is the stable identifier for the current policy
+                  run.
+                type: string
+              conditions:
+                description: Conditions contain detailed Kubernetes-style condition
+                  state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              currentRunKey:
+                description: CurrentRunKey is the stable run key derived from generation
+                  and trigger inputs.
+                type: string
+              lastAppliedImage:
+                description: LastAppliedImage is the most recent image applied to
+                  the target Deployment.
+                type: string
+              lastApplyTime:
+                description: LastApplyTime is the last time the target Deployment
+                  was patched.
+                format: date-time
+                type: string
+              lastBuildCompletionTime:
+                description: LastBuildCompletionTime is the last time the build stage
+                  completed.
+                format: date-time
+                type: string
+              lastBuildJobName:
+                description: LastBuildJobName is the most recent build Job name.
+                type: string
+              lastBuildStartTime:
+                description: LastBuildStartTime is the last time the build stage started.
+                format: date-time
+                type: string
+              lastBuiltImage:
+                description: LastBuiltImage is the most recent image produced by a
+                  build Job.
+                type: string
+              lastCheckJobName:
+                description: LastCheckJobName is the most recent check Job name.
+                type: string
+              lastCheckTime:
+                description: LastCheckTime is the last time the check stage completed
+                  or was processed.
+                format: date-time
+                type: string
+              lastRolloutTime:
+                description: LastRolloutTime is the last time the target Deployment
+                  rollout completed.
+                format: date-time
+                type: string
+              message:
+                description: Message is a human-readable description of the current
+                  state.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the latest metadata.generation
+                  processed by the controller.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the current policy state.
+                enum:
+                - Pending
+                - Checking
+                - UpToDate
+                - Building
+                - Publishing
+                - Applying
+                - RollingOut
+                - Succeeded
+                - Failed
+                type: string
+              reason:
+                description: Reason is a machine-readable reason for the current phase.
+                type: string
+              targetDeploymentGeneration:
+                description: TargetDeploymentGeneration is the target Deployment generation
+                  after patching.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

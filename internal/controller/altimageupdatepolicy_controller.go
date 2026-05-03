@@ -1,0 +1,920 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"time"
+
+	securityv1alpha1 "alt-image-update-operator/api/v1alpha1"
+	"alt-image-update-operator/internal/check"
+	"alt-image-update-operator/internal/deploy"
+	operatorimage "alt-image-update-operator/internal/image"
+	"alt-image-update-operator/internal/jobs"
+	operatormetrics "alt-image-update-operator/internal/metrics"
+	"alt-image-update-operator/internal/run"
+	operatorstatus "alt-image-update-operator/internal/status"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	eventRecorderName = "altimageupdatepolicy-controller"
+
+	eventReasonCheckStarted            = "CheckStarted"
+	eventReasonCheckCompleted          = "CheckCompleted"
+	eventReasonCheckFailed             = "CheckFailed"
+	eventReasonBuildStarted            = "BuildStarted"
+	eventReasonBuildCompleted          = "BuildCompleted"
+	eventReasonBuildFailed             = "BuildFailed"
+	eventReasonDeploymentUpdateStarted = "DeploymentUpdateStarted"
+	eventReasonDeploymentUpdated       = "DeploymentUpdated"
+	eventReasonRolloutCompleted        = "RolloutCompleted"
+	eventReasonRolloutFailed           = "RolloutFailed"
+	eventReasonPolicySucceeded         = "PolicySucceeded"
+	eventReasonPolicyFailed            = "PolicyFailed"
+
+	reasonPreflightSucceeded       = "PreflightSucceeded"
+	reasonTargetDeploymentNotFound = "TargetDeploymentNotFound"
+	reasonTargetContainerNotFound  = "TargetContainerNotFound"
+	reasonBuildContextNotFound     = "BuildContextNotFound"
+	reasonDockerfileKeyNotFound    = "DockerfileKeyNotFound"
+	reasonBuildImageInvalid        = "BuildImageInvalid"
+	reasonCheckJobRunning          = "CheckJobRunning"
+	reasonCheckJobCompleted        = "CheckJobCompleted"
+	reasonCheckLogsUnavailable     = "CheckLogsUnavailable"
+	reasonCheckJobFailed           = "CheckJobFailed"
+	reasonNoUpdates                = "NoUpdates"
+	reasonUpdatesAvailable         = "UpdatesAvailable"
+	reasonBuildJobEnsured          = "BuildJobEnsured"
+	reasonBuildJobRunning          = "BuildJobRunning"
+	reasonBuildJobCompleted        = "BuildJobCompleted"
+	reasonBuildJobFailed           = "BuildJobFailed"
+	reasonDeploymentPatched        = "DeploymentPatched"
+	reasonDeploymentAlreadyUpdated = "DeploymentAlreadyUpdated"
+	reasonRolloutCompleted         = "RolloutCompleted"
+	reasonRolloutFailed            = "RolloutFailed"
+
+	buildJobRequeueAfter = 5 * time.Second
+	checkJobRequeueAfter = 5 * time.Second
+	rolloutRequeueAfter  = 5 * time.Second
+)
+
+// AltImageUpdatePolicyReconciler reconciles an AltImageUpdatePolicy object.
+type AltImageUpdatePolicyReconciler struct {
+	client.Client
+	Scheme         *runtime.Scheme
+	CheckLogReader CheckJobLogReader
+	Recorder       record.EventRecorder
+	Metrics        operatormetrics.Recorder
+}
+
+// CheckJobLogReader reads container logs for a completed Check Job pod.
+type CheckJobLogReader interface {
+	ReadLogs(ctx context.Context, namespace, podName, containerName string) (string, error)
+}
+
+type kubernetesCheckJobLogReader struct {
+	clientset kubernetes.Interface
+}
+
+func (r *kubernetesCheckJobLogReader) ReadLogs(ctx context.Context, namespace, podName, containerName string) (string, error) {
+	req := r.clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: containerName,
+	})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	logBytes, err := io.ReadAll(stream)
+	if err != nil {
+		return "", err
+	}
+	return string(logBytes), nil
+}
+
+// +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=security.altlinux.org,resources=altimageupdatepolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+
+// Reconcile performs the policy preflight checks needed before starting check/build Jobs.
+func (r *AltImageUpdatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var policy securityv1alpha1.AltImageUpdatePolicy
+	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	originalStatus := policy.Status.DeepCopy()
+	runKey := run.RunKey(&policy)
+	buildID := run.BuildID(&policy)
+
+	if isCurrentTerminalRun(&policy.Status, policy.Generation, runKey, buildID) {
+		logger.V(1).Info("AltImageUpdatePolicy current run is terminal; skipping pipeline", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "phase", policy.Status.Phase)
+		return ctrl.Result{}, nil
+	}
+
+	runChanged := policy.Status.CurrentRunKey != "" && policy.Status.CurrentRunKey != runKey
+	policy.Status.CurrentRunKey = runKey
+	policy.Status.BuildID = buildID
+	if runChanged {
+		resetRunProgress(&policy.Status)
+	}
+
+	now := metav1.Now()
+
+	var deployment appsv1.Deployment
+	deploymentKey := types.NamespacedName{Namespace: policy.Namespace, Name: policy.Spec.TargetRef.Name}
+	if err := r.Get(ctx, deploymentKey, &deployment); err != nil {
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Target Deployment %q was not found in namespace %q", policy.Spec.TargetRef.Name, policy.Namespace)
+			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonTargetDeploymentNotFound, message)
+			return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
+		}
+		return ctrl.Result{}, err
+	}
+
+	if !deploymentHasContainer(&deployment, policy.Spec.ContainerName) {
+		message := fmt.Sprintf("Target Deployment %q does not contain container %q", policy.Spec.TargetRef.Name, policy.Spec.ContainerName)
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonTargetContainerNotFound, message)
+		return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
+	}
+
+	contextRef := policy.Spec.Build.Context.ConfigMapRef
+	var contextConfigMap corev1.ConfigMap
+	contextKey := types.NamespacedName{Namespace: policy.Namespace, Name: contextRef.Name}
+	if err := r.Get(ctx, contextKey, &contextConfigMap); err != nil {
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Build context ConfigMap %q was not found in namespace %q", contextRef.Name, policy.Namespace)
+			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildContextNotFound, message)
+			return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
+		}
+		return ctrl.Result{}, err
+	}
+
+	if _, ok := contextConfigMap.Data[contextRef.DockerfileKey]; !ok {
+		message := fmt.Sprintf("Build context ConfigMap %q does not contain Dockerfile key %q", contextRef.Name, contextRef.DockerfileKey)
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonDockerfileKeyNotFound, message)
+		return ctrl.Result{}, r.updatePolicyStatus(ctx, &policy, originalStatus)
+	}
+
+	if policy.Spec.Check.Mode == securityv1alpha1.CheckModeAltAptSimulation {
+		checkJob, err := r.ensureCheckJob(ctx, &policy, jobs.CheckJobOptions{
+			RunKey:  runKey,
+			BuildID: buildID,
+		})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		policy.Status.LastCheckJobName = checkJob.Name
+
+		if complete := findJobCondition(checkJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
+			checkLogs, podName, err := r.readCheckJobLogs(ctx, checkJob)
+			if err != nil {
+				message := fmt.Sprintf("Check Job %q completed, but check logs are unavailable: %v", checkJob.Name, err)
+				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonCheckLogsUnavailable, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reasonCheckLogsUnavailable, message, now)
+				if policy.Status.LastCheckTime == nil || originalStatus.LastCheckJobName != checkJob.Name {
+					policy.Status.LastCheckTime = &now
+				}
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check Job logs unavailable", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name, "error", err.Error())
+				return ctrl.Result{}, nil
+			}
+
+			if policy.Status.LastCheckTime == nil || originalStatus.LastCheckJobName != checkJob.Name {
+				policy.Status.LastCheckTime = &now
+			}
+
+			checkResult := check.ParseAltAptSimulationLog(checkLogs, true)
+			switch checkResult.Outcome {
+			case check.OutcomeNoUpdates:
+				message := fmt.Sprintf("Check Job %q completed from pod %q: no ALT package updates are available", checkJob.Name, podName)
+				operatorstatus.MarkUpToDate(&policy.Status, policy.Generation, now, reasonNoUpdates, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue, reasonNoUpdates, message, now)
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check found no updates", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name)
+				return ctrl.Result{}, nil
+
+			case check.OutcomeUpdatesAvailable:
+				message := fmt.Sprintf("Check Job %q completed from pod %q: ALT package updates are available", checkJob.Name, podName)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue, reasonUpdatesAvailable, message, now)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionUpdatesAvailable, metav1.ConditionTrue, reasonUpdatesAvailable, message, now)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionFailed, metav1.ConditionFalse, reasonUpdatesAvailable, message, now)
+
+				result, buildJob, err := r.runBuildPipeline(ctx, &policy, &deployment, originalStatus, runKey, buildID, now)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				buildJobName := ""
+				if buildJob != nil {
+					buildJobName = buildJob.Name
+				}
+				logger.V(1).Info("AltImageUpdatePolicy check found updates and continued build pipeline", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "checkJob", checkJob.Name, "buildJob", buildJobName, "phase", policy.Status.Phase, "reason", policy.Status.Reason)
+				return result, nil
+
+			case check.OutcomeCheckFailed:
+				reason := checkResult.Reason
+				if reason == "" {
+					reason = string(check.OutcomeCheckFailed)
+				}
+				message := fmt.Sprintf("Check Job %q completed from pod %q, but ALT apt simulation could not be classified as successful: %s", checkJob.Name, podName, checkResult.Message)
+				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reason, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reason, message, now)
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check log classification failed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name, "reason", reason)
+				return ctrl.Result{}, nil
+
+			default:
+				reason := "CheckResultUnknown"
+				message := fmt.Sprintf("Check Job %q completed from pod %q, but ALT apt simulation returned unknown outcome %q", checkJob.Name, podName, checkResult.Outcome)
+				operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reason, message)
+				operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reason, message, now)
+				if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				logger.V(1).Info("AltImageUpdatePolicy check log classification was unknown", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name, "outcome", checkResult.Outcome)
+				return ctrl.Result{}, nil
+			}
+		}
+
+		if failed := findJobCondition(checkJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
+			message := jobFailureMessage(checkJob, failed, "Check Job")
+			operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonCheckJobFailed, message)
+			operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse, reasonCheckJobFailed, message, now)
+			if policy.Status.LastCheckTime == nil || originalStatus.LastCheckJobName != checkJob.Name {
+				policy.Status.LastCheckTime = &now
+			}
+			if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			logger.V(1).Info("AltImageUpdatePolicy check Job failed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name)
+			return ctrl.Result{}, nil
+		}
+
+		message := fmt.Sprintf("Check Job %q is present", checkJob.Name)
+		if checkJob.Status.Active > 0 {
+			message = fmt.Sprintf("Check Job %q is running", checkJob.Name)
+		}
+		operatorstatus.MarkChecking(&policy.Status, policy.Generation, now, reasonCheckJobRunning, message)
+		if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		logger.V(1).Info("AltImageUpdatePolicy check Job ensured", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", checkJob.Name)
+		return ctrl.Result{RequeueAfter: checkJobRequeueAfter}, nil
+	}
+
+	if policy.Spec.Check.Mode == securityv1alpha1.CheckModeAlways {
+		result, buildJob, err := r.runBuildPipeline(ctx, &policy, &deployment, originalStatus, runKey, buildID, now)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		buildJobName := ""
+		if buildJob != nil {
+			buildJobName = buildJob.Name
+		}
+		logger.V(1).Info("AltImageUpdatePolicy build pipeline reconciled", "generation", policy.Generation, "runKey", runKey, "buildID", buildID, "job", buildJobName, "phase", policy.Status.Phase, "reason", policy.Status.Reason)
+		return result, nil
+	}
+
+	successMessage := "Policy preflight checks completed"
+	operatorstatus.SetPhase(&policy.Status, policy.Generation, operatorstatus.PhasePending, reasonPreflightSucceeded, successMessage)
+	operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionFailed, metav1.ConditionFalse, reasonPreflightSucceeded, successMessage, now)
+	if err := r.updatePolicyStatus(ctx, &policy, originalStatus); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	logger.V(1).Info("AltImageUpdatePolicy preflight completed", "generation", policy.Generation, "runKey", runKey, "buildID", buildID)
+	return ctrl.Result{}, nil
+}
+
+func deploymentHasContainer(deployment *appsv1.Deployment, containerName string) bool {
+	if deployment == nil {
+		return false
+	}
+	for i := range deployment.Spec.Template.Spec.Containers {
+		if deployment.Spec.Template.Spec.Containers[i].Name == containerName {
+			return true
+		}
+	}
+	return false
+}
+
+func isCurrentTerminalRun(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus, generation int64, runKey, buildID string) bool {
+	if policyStatus == nil {
+		return false
+	}
+	if policyStatus.ObservedGeneration != generation || policyStatus.CurrentRunKey != runKey || policyStatus.BuildID != buildID {
+		return false
+	}
+	return policyStatus.Phase == securityv1alpha1.PolicyPhaseSucceeded ||
+		policyStatus.Phase == securityv1alpha1.PolicyPhaseFailed ||
+		policyStatus.Phase == securityv1alpha1.PolicyPhaseUpToDate
+}
+
+func resetRunProgress(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus) {
+	if policyStatus == nil {
+		return
+	}
+
+	policyStatus.LastCheckTime = nil
+	policyStatus.LastBuildStartTime = nil
+	policyStatus.LastBuildCompletionTime = nil
+	policyStatus.LastApplyTime = nil
+	policyStatus.LastRolloutTime = nil
+	policyStatus.LastCheckJobName = ""
+	policyStatus.LastBuildJobName = ""
+	policyStatus.LastBuiltImage = ""
+	policyStatus.LastAppliedImage = ""
+	policyStatus.TargetDeploymentGeneration = 0
+}
+
+func (r *AltImageUpdatePolicyReconciler) ensureBuildJob(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, opts jobs.BuildJobOptions) (*batchv1.Job, error) {
+	jobName := jobs.BuildJobName(policy.Name, opts.BuildID)
+	jobKey := types.NamespacedName{Namespace: policy.Namespace, Name: jobName}
+
+	var existing batchv1.Job
+	if err := r.Get(ctx, jobKey, &existing); err != nil {
+		if !errors.IsNotFound(err) {
+			return nil, err
+		}
+
+		buildJob, err := jobs.NewBuildJob(policy, opts)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.Create(ctx, buildJob); err != nil {
+			if !errors.IsAlreadyExists(err) {
+				return nil, err
+			}
+			if err := r.Get(ctx, jobKey, &existing); err != nil {
+				return nil, err
+			}
+			return &existing, nil
+		}
+		return buildJob, nil
+	}
+
+	return &existing, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) ensureCheckJob(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, opts jobs.CheckJobOptions) (*batchv1.Job, error) {
+	jobName := jobs.CheckJobName(policy.Name, opts.BuildID)
+	jobKey := types.NamespacedName{Namespace: policy.Namespace, Name: jobName}
+
+	var existing batchv1.Job
+	if err := r.Get(ctx, jobKey, &existing); err != nil {
+		if !errors.IsNotFound(err) {
+			return nil, err
+		}
+
+		checkJob, err := jobs.NewCheckJob(policy, opts)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.Create(ctx, checkJob); err != nil {
+			if !errors.IsAlreadyExists(err) {
+				return nil, err
+			}
+			if err := r.Get(ctx, jobKey, &existing); err != nil {
+				return nil, err
+			}
+			return &existing, nil
+		}
+		return checkJob, nil
+	}
+
+	return &existing, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) runBuildPipeline(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, deployment *appsv1.Deployment, originalStatus *securityv1alpha1.AltImageUpdatePolicyStatus, runKey, buildID string, now metav1.Time) (ctrl.Result, *batchv1.Job, error) {
+	builtImage, err := operatorimage.BuildReference(policy.Spec.Build.OutputImage, buildID)
+	if err != nil {
+		message := fmt.Sprintf("Build output image %q cannot be converted to a build tag: %v", policy.Spec.Build.OutputImage, err)
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildImageInvalid, message)
+		return ctrl.Result{}, nil, nil
+	}
+
+	buildJob, err := r.ensureBuildJob(ctx, policy, jobs.BuildJobOptions{
+		RunKey:     runKey,
+		BuildID:    buildID,
+		BuiltImage: builtImage,
+	})
+	if err != nil {
+		return ctrl.Result{}, nil, err
+	}
+
+	policy.Status.LastBuildJobName = buildJob.Name
+	if policy.Status.LastBuildStartTime == nil || originalStatus.LastBuildJobName != buildJob.Name {
+		policy.Status.LastBuildStartTime = &now
+	}
+
+	if complete := findJobCondition(buildJob, batchv1.JobComplete); complete != nil && complete.Status == corev1.ConditionTrue {
+		buildMessage := fmt.Sprintf("Build Job %q completed and published image %q", buildJob.Name, builtImage)
+		operatorstatus.MarkApplying(&policy.Status, policy.Generation, now, reasonBuildJobCompleted, buildMessage)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionTrue, reasonBuildJobCompleted, buildMessage, now)
+		policy.Status.LastBuiltImage = builtImage
+		if policy.Status.LastBuildCompletionTime == nil || originalStatus.LastBuiltImage != builtImage || originalStatus.LastBuildJobName != buildJob.Name {
+			policy.Status.LastBuildCompletionTime = &now
+		}
+
+		deploymentPatched, appliedAt, err := r.applyBuiltImageToDeployment(ctx, deployment, policy, builtImage, buildID, now)
+		if err != nil {
+			return ctrl.Result{}, buildJob, err
+		}
+
+		applyReason := reasonDeploymentAlreadyUpdated
+		applyMessage := fmt.Sprintf("Deployment %q already uses image %q with required policy annotations", deployment.Name, builtImage)
+		if deploymentPatched {
+			applyReason = reasonDeploymentPatched
+			applyMessage = fmt.Sprintf("Patched Deployment %q container %q to image %q", deployment.Name, policy.Spec.ContainerName, builtImage)
+		}
+		operatorstatus.MarkRollout(&policy.Status, policy.Generation, now, applyReason, applyMessage)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionDeploymentUpdated, metav1.ConditionTrue, applyReason, applyMessage, now)
+		policy.Status.LastAppliedImage = builtImage
+		policy.Status.TargetDeploymentGeneration = deployment.Generation
+		if policy.Status.LastApplyTime == nil || originalStatus.LastAppliedImage != builtImage || deploymentPatched {
+			policy.Status.LastApplyTime = appliedAt
+		}
+
+		result, err := r.observeDeploymentRollout(ctx, policy, deployment, originalStatus, builtImage, now)
+		if err != nil {
+			return ctrl.Result{}, buildJob, err
+		}
+		return result, buildJob, nil
+	}
+
+	if failed := findJobCondition(buildJob, batchv1.JobFailed); failed != nil && failed.Status == corev1.ConditionTrue {
+		message := jobFailureMessage(buildJob, failed, "Build Job")
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonBuildJobFailed, message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionImagePublished, metav1.ConditionFalse, reasonBuildJobFailed, message, now)
+		return ctrl.Result{}, buildJob, nil
+	}
+
+	message := fmt.Sprintf("Build Job %q is present for image %q", buildJob.Name, builtImage)
+	if buildJob.Status.Active > 0 {
+		message = fmt.Sprintf("Build Job %q is running for image %q", buildJob.Name, builtImage)
+	}
+	operatorstatus.MarkBuilding(&policy.Status, policy.Generation, now, reasonBuildJobRunning, message)
+	return ctrl.Result{RequeueAfter: buildJobRequeueAfter}, buildJob, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) readCheckJobLogs(ctx context.Context, checkJob *batchv1.Job) (string, string, error) {
+	if r.CheckLogReader == nil {
+		return "", "", fmt.Errorf("check log reader is not configured")
+	}
+
+	pod, err := r.findCheckJobPod(ctx, checkJob)
+	if err != nil {
+		return "", "", err
+	}
+
+	logs, err := r.CheckLogReader.ReadLogs(ctx, pod.Namespace, pod.Name, jobs.CheckContainerName)
+	if err != nil {
+		return "", pod.Name, fmt.Errorf("read pod %q container %q logs: %w", pod.Name, jobs.CheckContainerName, err)
+	}
+	return logs, pod.Name, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) findCheckJobPod(ctx context.Context, checkJob *batchv1.Job) (*corev1.Pod, error) {
+	if checkJob == nil {
+		return nil, fmt.Errorf("check Job is nil")
+	}
+
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(checkJob.Namespace)); err != nil {
+		return nil, err
+	}
+
+	candidates := make([]corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		if isOwnedByJob(&podList.Items[i], checkJob) {
+			candidates = append(candidates, podList.Items[i])
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no pod owned by Check Job %q was found", checkJob.Name)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		iSucceeded := candidates[i].Status.Phase == corev1.PodSucceeded
+		jSucceeded := candidates[j].Status.Phase == corev1.PodSucceeded
+		if iSucceeded != jSucceeded {
+			return iSucceeded
+		}
+		if !candidates[i].CreationTimestamp.Equal(&candidates[j].CreationTimestamp) {
+			return candidates[j].CreationTimestamp.Before(&candidates[i].CreationTimestamp)
+		}
+		return candidates[i].Name < candidates[j].Name
+	})
+
+	return &candidates[0], nil
+}
+
+func isOwnedByJob(pod *corev1.Pod, job *batchv1.Job) bool {
+	if pod == nil || job == nil {
+		return false
+	}
+	for i := range pod.OwnerReferences {
+		owner := pod.OwnerReferences[i]
+		if owner.APIVersion != batchv1.SchemeGroupVersion.String() || owner.Kind != "Job" || owner.Name != job.Name {
+			continue
+		}
+		if job.UID != "" && owner.UID != job.UID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (r *AltImageUpdatePolicyReconciler) applyBuiltImageToDeployment(ctx context.Context, deployment *appsv1.Deployment, policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, now metav1.Time) (bool, *metav1.Time, error) {
+	appliedAt := deploymentAppliedAt(deployment, policy, builtImage, buildID, now)
+	patch := deploy.ImagePatch{
+		ContainerName:   policy.Spec.ContainerName,
+		Image:           builtImage,
+		BuildID:         buildID,
+		AppliedAt:       appliedAt.Time.UTC().Format(time.RFC3339),
+		PolicyName:      policy.Name,
+		PolicyNamespace: policy.Namespace,
+	}
+
+	before := deployment.DeepCopy()
+	changed, err := deploy.ApplyImagePatch(deployment, patch)
+	if err != nil {
+		return false, nil, err
+	}
+	if !changed {
+		return false, appliedAt, nil
+	}
+	r.emitEvent(policy, corev1.EventTypeNormal, eventReasonDeploymentUpdateStarted, fmt.Sprintf("Policy %s is patching Deployment %q container %q to image %q", policyIdentifier(policy), deployment.Name, policy.Spec.ContainerName, builtImage))
+	if err := r.Patch(ctx, deployment, client.StrategicMergeFrom(before)); err != nil {
+		return false, nil, err
+	}
+	return true, appliedAt, nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) observeDeploymentRollout(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, deployment *appsv1.Deployment, originalStatus *securityv1alpha1.AltImageUpdatePolicyStatus, builtImage string, now metav1.Time) (ctrl.Result, error) {
+	if deployment == nil {
+		return ctrl.Result{}, fmt.Errorf("deployment is nil")
+	}
+	if policy.Status.TargetDeploymentGeneration == 0 {
+		policy.Status.TargetDeploymentGeneration = deployment.Generation
+	}
+
+	if err := r.Get(ctx, types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}, deployment); err != nil {
+		return ctrl.Result{}, err
+	}
+	if deployment.Generation > policy.Status.TargetDeploymentGeneration {
+		policy.Status.TargetDeploymentGeneration = deployment.Generation
+	}
+
+	observation, err := deploy.ObserveRollout(deployment, deploy.RolloutOptions{
+		TargetGeneration: policy.Status.TargetDeploymentGeneration,
+		StartedAt:        statusTime(policy.Status.LastApplyTime),
+		Now:              now.Time,
+		Timeout:          rolloutTimeout(policy),
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	switch observation.State {
+	case deploy.RolloutStateSucceeded:
+		message := fmt.Sprintf("Deployment %q successfully rolled out image %q", deployment.Name, builtImage)
+		operatorstatus.MarkReady(&policy.Status, policy.Generation, now, reasonRolloutCompleted, message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionRolloutCompleted, metav1.ConditionTrue, reasonRolloutCompleted, message, now)
+		policy.Status.LastBuiltImage = builtImage
+		policy.Status.LastAppliedImage = builtImage
+		if policy.Status.LastRolloutTime == nil || originalStatus == nil || originalStatus.LastAppliedImage != builtImage {
+			policy.Status.LastRolloutTime = &now
+		}
+		return ctrl.Result{}, nil
+	case deploy.RolloutStateFailed:
+		message := fmt.Sprintf("Deployment %q rollout failed: %s: %s", deployment.Name, observation.Reason, observation.Message)
+		operatorstatus.MarkFailed(&policy.Status, policy.Generation, now, reasonRolloutFailed, message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionRolloutCompleted, metav1.ConditionFalse, reasonRolloutFailed, message, now)
+		return ctrl.Result{}, nil
+	case deploy.RolloutStateProgressing:
+		operatorstatus.MarkRollout(&policy.Status, policy.Generation, now, observation.Reason, observation.Message)
+		operatorstatus.SetCondition(&policy.Status.Conditions, policy.Generation, operatorstatus.ConditionRolloutCompleted, metav1.ConditionUnknown, observation.Reason, observation.Message, now)
+		return ctrl.Result{RequeueAfter: rolloutRequeueAfter}, nil
+	default:
+		return ctrl.Result{}, fmt.Errorf("unknown rollout state %q", observation.State)
+	}
+}
+
+func deploymentAppliedAt(deployment *appsv1.Deployment, policy *securityv1alpha1.AltImageUpdatePolicy, builtImage, buildID string, now metav1.Time) *metav1.Time {
+	if deployment != nil && deploymentContainerImage(deployment, policy.Spec.ContainerName) == builtImage {
+		annotations := deployment.Spec.Template.Annotations
+		if annotations[deploy.AnnotationLastBuildID] == buildID &&
+			annotations[deploy.AnnotationLastBuiltImage] == builtImage &&
+			annotations[deploy.AnnotationPolicyName] == policy.Name &&
+			annotations[deploy.AnnotationPolicyNamespace] == policy.Namespace &&
+			annotations[deploy.AnnotationLastAppliedAt] != "" {
+			if parsed, err := time.Parse(time.RFC3339, annotations[deploy.AnnotationLastAppliedAt]); err == nil {
+				return &metav1.Time{Time: parsed.UTC()}
+			}
+		}
+	}
+
+	return &now
+}
+
+func rolloutTimeout(policy *securityv1alpha1.AltImageUpdatePolicy) time.Duration {
+	if policy == nil || policy.Spec.Rollout.TimeoutSeconds == nil {
+		return 0
+	}
+	return time.Duration(*policy.Spec.Rollout.TimeoutSeconds) * time.Second
+}
+
+func statusTime(value *metav1.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.Time
+}
+
+func deploymentContainerImage(deployment *appsv1.Deployment, containerName string) string {
+	if deployment == nil {
+		return ""
+	}
+	for i := range deployment.Spec.Template.Spec.Containers {
+		if deployment.Spec.Template.Spec.Containers[i].Name == containerName {
+			return deployment.Spec.Template.Spec.Containers[i].Image
+		}
+	}
+	return ""
+}
+
+func findJobCondition(job *batchv1.Job, conditionType batchv1.JobConditionType) *batchv1.JobCondition {
+	if job == nil {
+		return nil
+	}
+	for i := range job.Status.Conditions {
+		if job.Status.Conditions[i].Type == conditionType {
+			return &job.Status.Conditions[i]
+		}
+	}
+	return nil
+}
+
+func jobFailureMessage(job *batchv1.Job, condition *batchv1.JobCondition, jobKind string) string {
+	if jobKind == "" {
+		jobKind = "Job"
+	}
+	if job == nil {
+		return jobKind + " failed"
+	}
+
+	message := fmt.Sprintf("%s %q failed", jobKind, job.Name)
+	if condition == nil {
+		return message
+	}
+	if condition.Reason != "" {
+		message += ": " + condition.Reason
+	}
+	if condition.Message != "" {
+		message += ": " + condition.Message
+	}
+	return message
+}
+
+func (r *AltImageUpdatePolicyReconciler) updatePolicyStatus(ctx context.Context, policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) error {
+	if original != nil && apiequality.Semantic.DeepEqual(original, &policy.Status) {
+		return nil
+	}
+	if err := r.Status().Update(ctx, policy); err != nil {
+		return err
+	}
+	r.recordStatusTransitionMetrics(policy, original)
+	r.emitStatusTransitionEvents(policy, original)
+	return nil
+}
+
+func (r *AltImageUpdatePolicyReconciler) recordStatusTransitionMetrics(policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) {
+	if r.Metrics == nil || policy == nil {
+		return
+	}
+	if original == nil {
+		original = &securityv1alpha1.AltImageUpdatePolicyStatus{}
+	}
+
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue) {
+		r.Metrics.RecordBuild(operatormetrics.ResultSucceeded)
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse) {
+		r.Metrics.RecordBuild(operatormetrics.ResultFailed)
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionTrue) {
+		r.Metrics.RecordRollout(operatormetrics.ResultSucceeded)
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionFalse) {
+		r.Metrics.RecordRollout(operatormetrics.ResultFailed)
+	}
+}
+
+func (r *AltImageUpdatePolicyReconciler) emitStatusTransitionEvents(policy *securityv1alpha1.AltImageUpdatePolicy, original *securityv1alpha1.AltImageUpdatePolicyStatus) {
+	if r.Recorder == nil || policy == nil {
+		return
+	}
+	if original == nil {
+		original = &securityv1alpha1.AltImageUpdatePolicyStatus{}
+	}
+
+	policyID := policyIdentifier(policy)
+
+	if policy.Status.LastCheckJobName != "" && original.LastCheckJobName != policy.Status.LastCheckJobName {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonCheckStarted, fmt.Sprintf("Policy %s started Check Job %q using ALT base image %q", policyID, policy.Status.LastCheckJobName, policy.Spec.Alt.BaseImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionCheckCompleted, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonCheckCompleted, fmt.Sprintf("Policy %s completed Check Job %q for ALT base image %q: %s", policyID, policy.Status.LastCheckJobName, policy.Spec.Alt.BaseImage, policy.Status.Message))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionCheckCompleted, metav1.ConditionFalse) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonCheckFailed, fmt.Sprintf("Policy %s Check Job %q failed for ALT base image %q: %s", policyID, policy.Status.LastCheckJobName, policy.Spec.Alt.BaseImage, policy.Status.Message))
+	}
+
+	if policy.Status.LastBuildJobName != "" && (original.LastBuildJobName != policy.Status.LastBuildJobName || timeChanged(original.LastBuildStartTime, policy.Status.LastBuildStartTime)) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonBuildStarted, fmt.Sprintf("Policy %s started Build Job %q for image %q", policyID, policy.Status.LastBuildJobName, eventImage(policy)))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonBuildCompleted, fmt.Sprintf("Policy %s completed Build Job %q and published image %q", policyID, policy.Status.LastBuildJobName, policy.Status.LastBuiltImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionBuildCompleted, metav1.ConditionFalse) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonBuildFailed, fmt.Sprintf("Policy %s Build Job %q failed: %s", policyID, policy.Status.LastBuildJobName, policy.Status.Message))
+	}
+
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionDeploymentUpdated, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonDeploymentUpdated, fmt.Sprintf("Policy %s updated Deployment %q to image %q", policyID, policy.Spec.TargetRef.Name, policy.Status.LastAppliedImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionTrue) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonRolloutCompleted, fmt.Sprintf("Policy %s completed rollout for Deployment %q with image %q", policyID, policy.Spec.TargetRef.Name, policy.Status.LastAppliedImage))
+	}
+	if conditionTransitionedTo(original, &policy.Status, operatorstatus.ConditionRolloutCompleted, metav1.ConditionFalse) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonRolloutFailed, fmt.Sprintf("Policy %s rollout failed for Deployment %q with image %q: %s", policyID, policy.Spec.TargetRef.Name, policy.Status.LastAppliedImage, policy.Status.Message))
+	}
+
+	if phaseTransitionedTo(original, &policy.Status, securityv1alpha1.PolicyPhaseSucceeded) {
+		r.emitEvent(policy, corev1.EventTypeNormal, eventReasonPolicySucceeded, fmt.Sprintf("Policy %s completed successfully with image %q", policyID, policy.Status.LastAppliedImage))
+	}
+	if phaseTransitionedTo(original, &policy.Status, securityv1alpha1.PolicyPhaseFailed) {
+		r.emitEvent(policy, corev1.EventTypeWarning, eventReasonPolicyFailed, fmt.Sprintf("Policy %s failed: %s", policyID, policy.Status.Message))
+	}
+}
+
+func (r *AltImageUpdatePolicyReconciler) emitEvent(policy *securityv1alpha1.AltImageUpdatePolicy, eventType, reason, message string) {
+	if r.Recorder == nil || policy == nil {
+		return
+	}
+	r.Recorder.Event(policy, eventType, reason, message)
+}
+
+func policyIdentifier(policy *securityv1alpha1.AltImageUpdatePolicy) string {
+	if policy == nil {
+		return "/"
+	}
+	return policy.Namespace + "/" + policy.Name
+}
+
+func eventImage(policy *securityv1alpha1.AltImageUpdatePolicy) string {
+	if policy == nil {
+		return ""
+	}
+	if policy.Status.LastBuiltImage != "" {
+		return policy.Status.LastBuiltImage
+	}
+	if policy.Status.LastAppliedImage != "" {
+		return policy.Status.LastAppliedImage
+	}
+	return policy.Spec.Build.OutputImage
+}
+
+func timeChanged(oldTime, newTime *metav1.Time) bool {
+	if newTime == nil {
+		return false
+	}
+	if oldTime == nil {
+		return true
+	}
+	return !oldTime.Equal(newTime)
+}
+
+func conditionTransitionedTo(original, current *securityv1alpha1.AltImageUpdatePolicyStatus, conditionType string, status metav1.ConditionStatus) bool {
+	currentCondition := statusCondition(current, conditionType)
+	if currentCondition == nil || currentCondition.Status != status {
+		return false
+	}
+	originalCondition := statusCondition(original, conditionType)
+	if originalCondition == nil {
+		return true
+	}
+	return originalCondition.Status != currentCondition.Status ||
+		originalCondition.Reason != currentCondition.Reason ||
+		originalCondition.Message != currentCondition.Message ||
+		originalCondition.ObservedGeneration != currentCondition.ObservedGeneration
+}
+
+func statusCondition(policyStatus *securityv1alpha1.AltImageUpdatePolicyStatus, conditionType string) *metav1.Condition {
+	if policyStatus == nil {
+		return nil
+	}
+	for i := range policyStatus.Conditions {
+		if policyStatus.Conditions[i].Type == conditionType {
+			return &policyStatus.Conditions[i]
+		}
+	}
+	return nil
+}
+
+func phaseTransitionedTo(original, current *securityv1alpha1.AltImageUpdatePolicyStatus, phase securityv1alpha1.PolicyPhase) bool {
+	if current == nil || current.Phase != phase {
+		return false
+	}
+	return original == nil || original.Phase != phase || original.ObservedGeneration != current.ObservedGeneration || original.CurrentRunKey != current.CurrentRunKey
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *AltImageUpdatePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.CheckLogReader == nil {
+		clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+		if err != nil {
+			return err
+		}
+		r.CheckLogReader = &kubernetesCheckJobLogReader{clientset: clientset}
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor(eventRecorderName)
+	}
+	if r.Metrics == nil {
+		r.Metrics = operatormetrics.DefaultRecorder
+	}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&securityv1alpha1.AltImageUpdatePolicy{}).
+		Named("altimageupdatepolicy").
+		Complete(r)
+}

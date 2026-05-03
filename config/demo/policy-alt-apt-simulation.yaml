@@ -1,0 +1,34 @@
+apiVersion: security.altlinux.org/v1alpha1
+kind: AltImageUpdatePolicy
+metadata:
+  name: demo-app-alt-apt-simulation
+  namespace: alt-image-update-demo
+spec:
+  alt:
+    branch: p10
+    baseImage: registry.altlinux.org/alt/alt:p10
+  trigger:
+    manualToken: demo-alt-apt-001
+  check:
+    mode: AltAptSimulation
+  build:
+    builder: Kaniko
+    builderImage: gcr.io/kaniko-project/executor:v1.23.2
+    outputImage: localhost:5001/alt/demo-app
+    context:
+      type: ConfigMap
+      configMapRef:
+        name: demo-app-context
+        dockerfileKey: Dockerfile
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-app
+  containerName: app
+  rollout:
+    timeoutSeconds: 180
+  jobTemplate:
+    hostNetwork: true
+    ttlSecondsAfterFinished: 300
+    backoffLimit: 0
+    activeDeadlineSeconds: 900
