@@ -1345,7 +1345,7 @@
     {
       "id": "T037",
       "title": "Run final MVP acceptance audit",
-      "status": "queued",
+      "status": "done",
       "priority": 64,
       "dependencies": [
         "T032",
@@ -1383,11 +1383,12 @@
       ],
       "implementation_notes": "Do not mark the MVP complete if real build, push, Deployment update, or rollout verification fails. Use only the explicitly allowed remote minikube kubeconfig for live-cluster acceptance.",
       "risk": "high",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 2,
+      "assigned_to": "codex-review",
+      "started_at": "2026-05-03T12:54:15Z",
+      "completed_at": "2026-05-03T13:04:32Z",
+      "result_summary": "Completed the final MVP acceptance audit. Static review found the repository aligned with PRD AC-001 through AC-025 for the implemented MVP, and parent review reran the required local validations plus the supported remote-minikube live e2e path. The live e2e installed the CRD, started a freshly built local controller manager against the allowed remote minikube, ran the Always policy through real Kaniko build/push and Deployment rollout, reset registry storage, then ran AltAptSimulation through real apt simulation logs, UpdatesAvailable classification, real Kaniko build/push, Deployment image update, rollout success, and Succeeded policy status. The manager-as-Pod deployment path was not exercised because it requires a separately published manager image; the documented/supported thesis e2e path uses a local manager process against remote minikube.",
+      "validation_result": "Passed locally: GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make generate; same environment make manifests; same environment go test ./...; same environment make verify-codegen; same environment make verify-shell; git diff --check; ruby JSON parse for tasks.json. Passed live on explicitly allowed remote minikube: kubectl --kubeconfig /Users/konstantin/.kube-remote/minikube-config get nodes -o wide confirmed minikube Ready at 192.168.49.2; KUBECONFIG=/Users/konstantin/.kube-remote/minikube-config E2E_REGISTRY_FORWARD_PORT=5021 hack/e2e.sh completed Always and AltAptSimulation scenarios; kubectl get crd altimageupdatepolicies.security.altlinux.org passed; kubectl api-resources --api-group=security.altlinux.org showed namespaced AltImageUpdatePolicy; kubectl -n alt-image-update-demo get altimageupdatepolicy demo-app-alt-apt-simulation showed phase Succeeded with built/applied image localhost:5000/alt/demo-app:g1-bcbd681d3ad28fae; kubectl rollout status deployment/demo-app passed; final Deployment app image matched status.lastAppliedImage."
     }
   ]
 }
