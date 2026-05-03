@@ -1304,7 +1304,7 @@
     {
       "id": "T036",
       "title": "Add CI workflow for generation tests and manifests",
-      "status": "queued",
+      "status": "done",
       "priority": 65,
       "dependencies": [
         "T027",
@@ -1335,11 +1335,12 @@
       ],
       "implementation_notes": "Real kind e2e can be a separate manual or scheduled job if CI runners cannot support Docker-in-Docker reliably.",
       "risk": "medium",
-      "attempts": 0,
-      "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "result_summary": null
+      "attempts": 1,
+      "assigned_to": "ralph-36311",
+      "started_at": "2026-05-03T12:47:23Z",
+      "completed_at": "2026-05-03T12:51:51Z",
+      "result_summary": "Added a normal PR/push CI workflow that runs shell syntax checks, generated code/manifest consistency checks, and go test ./... without requiring a live cluster. Added Makefile verify-codegen and verify-shell targets plus hack/verify-codegen.sh. Moved the existing kind e2e workflow to manual workflow_dispatch only, and added a guard hack/kind-with-registry.sh that refuses local kind registry setup in favor of the allowed remote-minikube e2e path while preserving the required syntax check.",
+      "validation_result": "Passed: gofmt -w $(git ls-files '*.go'); GOPROXY=off GOSUMDB=off GOMODCACHE=/Users/konstantin/go/pkg/mod GOCACHE=$PWD/.gocache/build make generate; same environment make manifests; same environment go test ./...; bash -n hack/e2e.sh; bash -n hack/kind-with-registry.sh; same environment make verify-codegen; same environment make verify-shell; ruby YAML parse for .github/workflows/ci.yaml and .github/workflows/test-e2e.yml; git diff --check."
     },
     {
       "id": "T037",
